@@ -305,11 +305,12 @@ func (a *app) infra(provider string) (infrastructure.Provider, error) {
 	case providerDocker:
 		d := a.cfg.Docker
 		return dockerInfra{dockerprovider.New(nil, dockerprovider.Config{
-			Runtime:   d.Runtime,
-			NodeImage: d.NodeImage,
-			Network:   d.Network,
-			LBImage:   d.LBImage,
-			Socket:    d.Socket,
+			Runtime:      d.Runtime,
+			NodeImage:    d.NodeImage,
+			Network:      d.Network,
+			LBImage:      d.LBImage,
+			Socket:       d.Socket,
+			CleanupImage: d.CleanupImage,
 		})}, nil
 	default:
 		return nil, fmt.Errorf("infrastructure provider %q: %w (available: %s, %s, %s)", provider, ErrNotImplemented, providerProxmox, providerDocker, providerAWS)

@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -206,6 +208,89 @@ func (r *CLIRuntime) Remove(ctx context.Context, name string) error {
 		return nil
 	}
 	return err
+}
+
+// RemoveNetwork implements Runtime. A missing network, or one still in use by
+// another cluster's containers, is tolerated: the network is shared, so a
+// failure to remove it is not a failure of the teardown.
+func (r *CLIRuntime) RemoveNetwork(ctx context.Context, name string) error {
+	if name == "" {
+		return nil
+	}
+	switch name {
+	case "podman", "bridge", "host", "none":
+		// Built-in networks are never removed.
+		return nil
+	}
+	_, err := r.run(ctx, nil, "network", "rm", name)
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "No such network") || strings.Contains(msg, "not found") ||
+		strings.Contains(msg, "has active endpoints") || strings.Contains(msg, "in use") {
+		return nil
+	}
+	return err
+}
+
+// PublishedPort implements Runtime. It reads the host binding of a container's
+// published port with `<bin> port <name> <containerPort>/tcp`, which both
+// docker and podman render as "host:port" lines (for example "0.0.0.0:35623").
+// A wildcard host (0.0.0.0 or ::) is normalized to 127.0.0.1.
+func (r *CLIRuntime) PublishedPort(ctx context.Context, name string, containerPort int) (string, int, error) {
+	out, err := r.run(ctx, nil, "port", name, fmt.Sprintf("%d/tcp", containerPort))
+	if err != nil {
+		return "", 0, err
+	}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		host, port, err := net.SplitHostPort(line)
+		if err != nil {
+			continue
+		}
+		p, err := strconv.Atoi(port)
+		if err != nil || p == 0 {
+			continue
+		}
+		if host == "" || host == "0.0.0.0" || host == "::" || host == "[::]" {
+			host = "127.0.0.1"
+		}
+		return host, p, nil
+	}
+	return "", 0, fmt.Errorf("%s port %s %d: no published host port in %q", r.bin, name, containerPort, strings.TrimSpace(out))
+}
+
+// RunCleanup implements Runtime. It launches the cleanup container detached and
+// self-removing (--rm): the runtime removes it when its sweep script exits,
+// which is the reliable way for the container to disappear (a container that
+// force-removes itself over the socket is SIGKILLed mid-removal on podman and
+// can leak). The sweep is passed as a single `sh -c` argument and reads its
+// parameters from the environment.
+func (r *CLIRuntime) RunCleanup(ctx context.Context, opts CleanupOpts) (string, error) {
+	if opts.Socket == "" {
+		return "", fmt.Errorf("docker provider: deletion cleanup needs the host runtime socket; set docker.socket or use `klotho delete --watch`")
+	}
+	args := []string{
+		"run", "--detach", "--rm",
+		"--name", opts.Name,
+		"--label", CleanupLabelKey + "=" + opts.Cluster,
+		"--volume", opts.Socket + ":" + DockerSocketPath,
+		"--env", "DOCKER_HOST=unix://" + DockerSocketPath,
+		"--env", "CLUSTER=" + opts.Cluster,
+		"--env", "NETWORK=" + opts.Network,
+		"--env", fmt.Sprintf("TIMEOUT=%d", opts.TimeoutSeconds),
+		opts.Image,
+		"sh", "-c", opts.Script,
+	}
+	out, err := r.run(ctx, nil, args...)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
 }
 
 // firstName returns the first container name from the Names field, which

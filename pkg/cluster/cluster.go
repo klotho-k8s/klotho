@@ -43,10 +43,15 @@ type Resource struct {
 // delete the cluster and to mint credentials for it, and nothing that is
 // itself a usable credential.
 type State struct {
-	Spec      Spec       `json:"spec"`
-	Endpoint  Endpoint   `json:"endpoint"`
-	Bootstrap *Node      `json:"bootstrap,omitempty"`
-	Resources []Resource `json:"resources,omitempty"`
+	Spec     Spec     `json:"spec"`
+	Endpoint Endpoint `json:"endpoint"`
+	// ClientEndpoint, when set, is the host-reachable address klotho dials for
+	// its own API calls (delete) instead of Endpoint, for clusters whose
+	// controlPlaneEndpoint is not routable from the host (see
+	// infrastructure.Prepared.ClientEndpoint). Zero means dial Endpoint.
+	ClientEndpoint Endpoint   `json:"clientEndpoint,omitempty"`
+	Bootstrap      *Node      `json:"bootstrap,omitempty"`
+	Resources      []Resource `json:"resources,omitempty"`
 	// CA is the PEM-encoded cluster CA certificate and key used to mint
 	// short-lived client certificates on demand.
 	CA        KeyPair   `json:"ca"`

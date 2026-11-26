@@ -78,6 +78,13 @@ const (
 	DefaultPort = 6443
 	// DefaultLBImage is the haproxy image CAPD uses for the load balancer.
 	DefaultLBImage = "kindest/haproxy:v20230606-42a2262b"
+	// DefaultCleanupImage is the image the deletion cleanup container runs. It
+	// must carry a Docker-API-compatible CLI and a POSIX shell; the official
+	// docker CLI image drives podman's socket as well as docker's.
+	DefaultCleanupImage = "docker.io/library/docker:cli"
+	// DefaultCleanupTimeoutSeconds bounds how long the cleanup container waits
+	// for Cluster API to delete what it can before it force-removes the rest.
+	DefaultCleanupTimeoutSeconds = 300
 )
 
 // VarKubernetesVersion is the template variable (and config fallback) that
@@ -105,6 +112,13 @@ type Config struct {
 	// Empty leaves nodes without host runtime access, so CAPD cannot
 	// reconcile and the cluster never self-manages.
 	Socket string
+	// CleanupImage overrides the image the deletion cleanup container runs.
+	// Empty means DefaultCleanupImage.
+	CleanupImage string
+	// CleanupTimeoutSeconds overrides how long the cleanup container waits for
+	// Cluster API before force-removing the remainder. Zero means
+	// DefaultCleanupTimeoutSeconds.
+	CleanupTimeoutSeconds int
 }
 
 // Provider implements infrastructure.Provider for CAPD.

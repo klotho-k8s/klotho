@@ -113,7 +113,7 @@ func TestCreateHappyPath(t *testing.T) {
 		"cp.UserData demo-control-plane",
 		"infra.Launch",
 		"store.Save demo",
-		"kube.Connect admin-kubeconfig",
+		"kube.Connect ",
 		"kube.Ready",
 		"kube.Apply klotho Namespace capi-system",
 		"kube.Apply klotho Secret fake-variables",
@@ -584,6 +584,54 @@ func TestConnectAdminBuildsKubeconfig(t *testing.T) {
 	}
 	if c := cfg.Clusters["demo"]; c == nil || c.Server != "https://10.0.0.10:6443" {
 		t.Fatalf("cluster server %+v", c)
+	}
+}
+
+func TestConnectAdminDialsClientEndpoint(t *testing.T) {
+	ca := testCA(t)
+	var got []byte
+	deps := Deps{
+		Store: newFakeStore(&recorder{}),
+		Codec: state.PlainCodec{},
+		Connect: func(_ context.Context, kubeconfig []byte) (kube.Cluster, error) {
+			got = kubeconfig
+			return nil, errors.New("captured; not dialing")
+		},
+	}
+	st := &cluster.State{
+		// The cluster endpoint is not host-routable; the client endpoint is.
+		Endpoint:       cluster.Endpoint{Host: "10.89.1.15", Port: 6443},
+		ClientEndpoint: cluster.Endpoint{Host: "127.0.0.1", Port: 35623},
+		CA:             ca,
+	}
+	st.Spec.Name = "demo"
+	if _, err := deps.connectAdmin(t.Context(), st); !errors.Is(err, errClusterUnreachable) {
+		t.Fatalf("want errClusterUnreachable, got %v", err)
+	}
+	cfg, err := clientcmd.Load(got)
+	if err != nil {
+		t.Fatalf("unparseable kubeconfig: %v", err)
+	}
+	if c := cfg.Clusters["demo"]; c == nil || c.Server != "https://127.0.0.1:35623" {
+		t.Fatalf("connectAdmin must dial the client endpoint, got %+v", c)
+	}
+}
+
+func TestCreatePersistsClientEndpoint(t *testing.T) {
+	h := newHarness(t)
+	h.infra.clientEndpoint = cluster.Endpoint{Host: "127.0.0.1", Port: 35623}
+	if _, err := Create(t.Context(), h.deps, request()); err != nil {
+		t.Fatal(err)
+	}
+	st := h.store.state("demo")
+	if st == nil {
+		t.Fatal("no state persisted")
+	}
+	if st.Endpoint.Host != "10.0.0.10" {
+		t.Fatalf("cluster endpoint = %+v, want the controlPlaneEndpoint", st.Endpoint)
+	}
+	if st.ClientEndpoint.Host != "127.0.0.1" || st.ClientEndpoint.Port != 35623 {
+		t.Fatalf("client endpoint = %+v, want the host-reachable endpoint", st.ClientEndpoint)
 	}
 }
 

@@ -185,7 +185,12 @@ type Docker struct {
 	// Socket is the host container-runtime socket mounted into every node so
 	// the in-cluster CAPD manager can manage sibling containers. For podman,
 	// "/run/user/<uid>/podman/podman.sock"; for docker, "/var/run/docker.sock".
+	// It is also mounted into the deletion cleanup container.
 	Socket string `json:"socket,omitempty"`
+	// CleanupImage overrides the image the deletion cleanup container runs. It
+	// must carry a Docker-API-compatible CLI and a POSIX shell. Empty means the
+	// default (the official docker CLI image).
+	CleanupImage string `json:"cleanupImage,omitempty"`
 }
 
 // Proxmox holds the Proxmox VE connection and placement settings.

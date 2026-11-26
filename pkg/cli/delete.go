@@ -43,6 +43,10 @@ func newDeleteCommand() *cli.Command {
 				Name:  "force",
 				Usage: "skip Cluster API and remove the infrastructure directly by tag; use when the cluster's API is already gone",
 			},
+			&cli.DurationFlag{
+				Name:  "watch-timeout",
+				Usage: "with --watch, how long to follow the Cluster API deletion before sweeping the rest in-process (default 20m)",
+			},
 		},
 		Action: func(ctx context.Context, c *cli.Command) error {
 			name, err := clusterNameArg(c)
@@ -68,9 +72,10 @@ func newDeleteCommand() *cli.Command {
 				}
 			}
 			opts := klotho.DeleteOptions{
-				Watch:    c.Bool("watch"),
-				Graceful: c.Bool("graceful"),
-				Force:    c.Bool("force"),
+				Watch:        c.Bool("watch"),
+				Graceful:     c.Bool("graceful"),
+				Force:        c.Bool("force"),
+				WatchTimeout: c.Duration("watch-timeout"),
 			}
 			if !c.Bool("yes") {
 				opts.Confirm = func(p *infrastructure.Plan) bool { return confirm(c, name, p) }
