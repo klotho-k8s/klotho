@@ -43,12 +43,35 @@ func (deps Deps) connectAdmin(ctx context.Context, st *cluster.State) (kube.Clus
 	if deps.ConnectAdmin != nil {
 		return deps.ConnectAdmin(ctx, st)
 	}
+	kubeconfig, err := adminKubeconfig(st)
+	if err != nil {
+		return nil, err
+	}
+	connect := deps.Connect
+	if connect == nil {
+		connect = kube.New
+	}
+	cl, err := connect(ctx, kubeconfig)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errClusterUnreachable, err)
+	}
+	if err := cl.Ready(ctx); err != nil {
+		return nil, fmt.Errorf("%w: %w", errClusterUnreachable, err)
+	}
+	return cl, nil
+}
+
+// adminKubeconfig mints a short-lived admin client certificate from the
+// cluster's CA and writes a kubeconfig for its endpoint. The context and user
+// are named for the cluster. It is used both to drive a deletion and to hand a
+// hook a working KUBECONFIG for the booted cluster.
+func adminKubeconfig(st *cluster.State) ([]byte, error) {
 	certPEM, keyPEM, err := credential.Mint(st.CA, st.Spec.Name, adminCredentialTTL)
 	if err != nil {
 		return nil, fmt.Errorf("minting admin credential for %s: %w", st.Spec.Name, err)
 	}
-	cfg := clientcmdapi.NewConfig()
 	name := st.Spec.Name
+	cfg := clientcmdapi.NewConfig()
 	// Dial the host-reachable client endpoint when the provider reported one
 	// (CAPD on rootless podman), else the cluster endpoint.
 	dialEP := st.Endpoint
@@ -70,18 +93,7 @@ func (deps Deps) connectAdmin(ctx context.Context, st *cluster.State) (kube.Clus
 	if err != nil {
 		return nil, fmt.Errorf("writing admin kubeconfig for %s: %w", name, err)
 	}
-	connect := deps.Connect
-	if connect == nil {
-		connect = kube.New
-	}
-	cl, err := connect(ctx, kubeconfig)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %w", errClusterUnreachable, err)
-	}
-	if err := cl.Ready(ctx); err != nil {
-		return nil, fmt.Errorf("%w: %w", errClusterUnreachable, err)
-	}
-	return cl, nil
+	return kubeconfig, nil
 }
 
 // deleteDirect removes the infrastructure by tag and the record, without

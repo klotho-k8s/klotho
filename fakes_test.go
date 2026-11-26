@@ -208,6 +208,10 @@ func (f *fakeInfra) LaunchDeletionSidecar(_ context.Context, state *cluster.Stat
 type fakeCP struct {
 	rec      *recorder
 	findings []provider.Finding
+	// ca, when set, is the cluster CA Prepare returns instead of the default
+	// placeholder, so a test needing a mintable CA (hook kubeconfigs) can
+	// inject a real one.
+	ca *cluster.KeyPair
 }
 
 // Check implements provider.Checker with canned findings.
@@ -236,8 +240,12 @@ current-context: demo
 
 func (f *fakeCP) Prepare(_ context.Context, _ *cluster.Spec, ep cluster.Endpoint) (*controlplane.Credentials, error) {
 	f.rec.add("cp.Prepare %s:%d", ep.Host, ep.Port)
+	ca := cluster.KeyPair{Cert: []byte("CA-CERT"), Key: []byte("CA-KEY")}
+	if f.ca != nil {
+		ca = *f.ca
+	}
 	return &controlplane.Credentials{
-		CA:         cluster.KeyPair{Cert: []byte("CA-CERT"), Key: []byte("CA-KEY")},
+		CA:         ca,
 		Kubeconfig: []byte(fakeKubeconfig),
 	}, nil
 }
