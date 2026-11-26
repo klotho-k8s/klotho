@@ -61,6 +61,9 @@ func TestLoadMissingFileGivesDefaults(t *testing.T) {
 	if c.Providers[ProviderGCP].Version != DefaultGCPVersion {
 		t.Errorf("gcp default version = %q, want %q", c.Providers[ProviderGCP].Version, DefaultGCPVersion)
 	}
+	if c.Providers[ProviderAzure].Version != DefaultAzureVersion {
+		t.Errorf("azure default version = %q, want %q", c.Providers[ProviderAzure].Version, DefaultAzureVersion)
+	}
 	if c.EffectiveBackend() != BackendFile {
 		t.Errorf("backend = %s", c.EffectiveBackend())
 	}
@@ -81,6 +84,34 @@ func TestLinodeTokenFromEnvOnly(t *testing.T) {
 	}
 	if c.Linode.Token != "tok-from-env" {
 		t.Errorf("token = %q, want the environment value", c.Linode.Token)
+	}
+}
+
+func TestAzureClientSecretFromEnvOnly(t *testing.T) {
+	isolate(t)
+	// The client secret comes only from the environment; the rest of the azure
+	// block is loaded from the file.
+	writeConfig(t, "azure:\n  subscriptionId: sub-1\n  tenantId: tenant-1\n  clientId: client-1\n  location: eastus\n  resourceGroup: rg-1\n  vnet: vnet-1\n  subnet: subnet-1\n")
+	t.Setenv(EnvAzureClientSecret, "secret-from-env")
+	c, err := Load("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Azure.SubscriptionID != "sub-1" || c.Azure.ResourceGroup != "rg-1" || c.Azure.Subnet != "subnet-1" {
+		t.Errorf("azure config not loaded: %+v", c.Azure)
+	}
+	if c.Azure.ClientSecret != "secret-from-env" {
+		t.Errorf("client secret = %q, want the environment value", c.Azure.ClientSecret)
+	}
+}
+
+func TestAzureClientSecretInFileRejected(t *testing.T) {
+	isolate(t)
+	// A "clientSecret" key in the azure block is an unknown field (json:"-"), so
+	// Load rejects it rather than storing a credential in the file.
+	writeConfig(t, "azure:\n  subscriptionId: sub-1\n  clientSecret: should-not-be-here\n")
+	if _, err := Load("", ""); err == nil {
+		t.Fatal("expected Load to reject a clientSecret key in the config file")
 	}
 }
 
