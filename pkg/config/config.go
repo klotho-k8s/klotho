@@ -55,6 +55,9 @@ const (
 	EnvS3AccessKeyID   = "KLOTHO_S3_ACCESS_KEY_ID"
 	EnvS3SecretKey     = "KLOTHO_S3_SECRET_ACCESS_KEY"
 	EnvLinodeToken     = "LINODE_TOKEN"
+	// EnvGCPCredentials is the standard GCP service-account key path; klotho
+	// reads it for gcp.credentialsFile when that is unset.
+	EnvGCPCredentials = "GOOGLE_APPLICATION_CREDENTIALS"
 )
 
 // Defaults.
@@ -69,12 +72,21 @@ const (
 	// installed for the linode provider. The v0.10 series is the first on the
 	// Cluster API v1beta2 contract klotho requires. VERIFY against a live run.
 	DefaultLinodeVersion = "v0.10.17"
+	// DefaultGCPVersion is the Cluster API Provider GCP (CAPG) release installed
+	// for the gcp provider. CAPG's infrastructure objects are v1beta1; the flat
+	// cluster template authors the CAPI-core objects in the v1beta2 contract
+	// klotho requires. VERIFY the release and the contract compatibility against
+	// a live run.
+	DefaultGCPVersion = "v1.8.1"
 	// ProviderAWS is the aws infrastructure provider's name, as clusterctl
 	// and --provider know it.
 	ProviderAWS = "aws"
 	// ProviderLinode is the linode infrastructure provider's name, as
 	// clusterctl and --provider know it.
 	ProviderLinode = "linode"
+	// ProviderGCP is the gcp infrastructure provider's name, as clusterctl and
+	// --provider know it.
+	ProviderGCP = "gcp"
 	// FileName is the configuration file's name inside the config directory.
 	FileName = "config.yaml"
 	// IdentityFileName is the default age identity file's name inside the
@@ -118,6 +130,7 @@ type Config struct {
 	Proxmox           Proxmox    `json:"proxmox,omitempty"`
 	AWS               AWS        `json:"aws,omitempty"`
 	Linode            Linode     `json:"linode,omitempty"`
+	GCP               GCP        `json:"gcp,omitempty"`
 	Docker            Docker     `json:"docker,omitempty"`
 	CAPI              CAPI       `json:"capi,omitempty"`
 	// Nodes configures what every node of a generated cluster does at boot.
@@ -218,6 +231,70 @@ type Linode struct {
 	ControlPlaneEndpoint string `json:"controlPlaneEndpoint,omitempty"`
 	// Port is the API server port; zero means 6443.
 	Port int `json:"port,omitempty"`
+}
+
+// GCP holds the Google Cloud connection and placement settings for the gcp
+// (CAPG) provider. The service-account credential is a file path, not stored
+// inline; its contents are handed, base64-encoded, to the in-cluster CAPG
+// controller as GCP_B64ENCODED_CREDENTIALS.
+type GCP struct {
+	// Project is the GCP project ID. Required for the gcp provider.
+	Project string `json:"project,omitempty"`
+	// Region is the GCP region, e.g. "us-central1". Required.
+	Region string `json:"region,omitempty"`
+	// Zone is the Compute Engine zone the bootstrap instance is placed in, e.g.
+	// "us-central1-a". Required; it must be within Region.
+	Zone string `json:"zone,omitempty"`
+	// MachineType sizes the bootstrap instance (and the template's machines);
+	// empty means e2-medium, the smallest sane type that clears kubeadm's
+	// two-CPU control-plane preflight.
+	MachineType string `json:"machineType,omitempty"`
+	// Image is a fully-qualified image path or a bare image name in ImageProject;
+	// empty resolves the newest image in ImageFamily of ImageProject.
+	Image string `json:"image,omitempty"`
+	// ImageProject and ImageFamily resolve the bootstrap image when Image is
+	// empty; empty means ubuntu-os-cloud / ubuntu-2204-lts (a plain image, so
+	// install-at-boot is needed).
+	ImageProject string `json:"imageProject,omitempty"`
+	ImageFamily  string `json:"imageFamily,omitempty"`
+	// DiskSizeGB and DiskType size the bootstrap boot disk; zero/empty mean 30 GB
+	// pd-balanced.
+	DiskSizeGB int64  `json:"diskSizeGB,omitempty"`
+	DiskType   string `json:"diskType,omitempty"`
+	// Network is the VPC network nodes join; empty means "default". Subnet is the
+	// region subnetwork; empty means the network's "default" subnet.
+	Network string `json:"network,omitempty"`
+	Subnet  string `json:"subnet,omitempty"`
+	// ServiceAccount is the instance service-account email; empty uses the
+	// project's default compute service account.
+	ServiceAccount string `json:"serviceAccount,omitempty"`
+	// NetworkTags are GCE network tags applied to the bootstrap instance.
+	NetworkTags []string `json:"networkTags,omitempty"`
+	// AuthorizedKeys are SSH public keys installed via the instance "ssh-keys"
+	// metadata (for LoginUser), so a failed bootstrap can be diagnosed.
+	AuthorizedKeys []string `json:"authorizedKeys,omitempty"`
+	// LoginUser is the OS user the authorized keys are installed for; empty means
+	// "klotho".
+	LoginUser string `json:"loginUser,omitempty"`
+	// PublicIP gives the bootstrap instance an ephemeral external IP (so it
+	// reaches the internet with no Cloud NAT). Unset means true; set it false
+	// only with a Cloud NAT and a supplied ControlPlaneEndpoint.
+	PublicIP *bool `json:"publicIp,omitempty"`
+	// Preemptible requests the bootstrap instance as a Spot VM. Development only;
+	// a reclaimed node is terminated, not restarted. The template's CAPG-managed
+	// machines are preemptible regardless.
+	Preemptible bool `json:"preemptible,omitempty"`
+	// ControlPlaneEndpoint is the API server host. Empty means klotho reserves
+	// the global static IP CAPG's (unavoidable) load balancer uses, so the
+	// endpoint is known before the certificates are minted.
+	ControlPlaneEndpoint string `json:"controlPlaneEndpoint,omitempty"`
+	// Port is the API server port; zero means 6443.
+	Port int `json:"port,omitempty"`
+	// CredentialsFile is a path to a service-account key JSON. Empty uses
+	// Application Default Credentials for klotho's host-side calls (and then the
+	// in-cluster controller has no credential unless ADC resolves one it can
+	// read). It is read from GOOGLE_APPLICATION_CREDENTIALS when unset.
+	CredentialsFile string `json:"credentialsFile,omitempty"`
 }
 
 // Docker holds the Cluster API Docker provider (CAPD) settings for local
@@ -690,6 +767,11 @@ func (c *Config) applyEnv() error {
 	if v, ok := os.LookupEnv(EnvLinodeToken); ok && v != "" {
 		c.Linode.Token = v
 	}
+	if c.GCP.CredentialsFile == "" {
+		if v, ok := os.LookupEnv(EnvGCPCredentials); ok && v != "" {
+			c.GCP.CredentialsFile = v
+		}
+	}
 	return nil
 }
 
@@ -727,6 +809,12 @@ func (c *Config) applyDefaults() {
 		linode.Version = DefaultLinodeVersion
 	}
 	c.Providers[ProviderLinode] = linode
+	gcp := c.Providers[ProviderGCP]
+	if gcp.Version == "" {
+		gcp.Version = DefaultGCPVersion
+	}
+	c.Providers[ProviderGCP] = gcp
+	c.GCP.CredentialsFile = Expand(c.GCP.CredentialsFile)
 	if c.Variables == nil {
 		c.Variables = map[string]string{}
 	}

@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -358,7 +359,7 @@ func TestDeleteReservationWithoutProvider(t *testing.T) {
 
 func TestCreateRejectsUnknownProviders(t *testing.T) {
 	isolate(t)
-	r := run(t, "", "create", "demo", "--provider", "gcp")
+	r := run(t, "", "create", "demo", "--provider", "openstack")
 	if !errors.Is(r.runErr, ErrNotImplemented) {
 		t.Fatalf("provider: %v", r.runErr)
 	}
@@ -384,6 +385,40 @@ func TestCreateAdmitsLinodeButNeedsToken(t *testing.T) {
 	}
 	if r.runErr == nil || !strings.Contains(r.runErr.Error(), "LINODE_TOKEN") {
 		t.Fatalf("want a missing-token error, got %v", r.runErr)
+	}
+}
+
+func TestCreateAdmitsGCPButNeedsProject(t *testing.T) {
+	isolate(t)
+	run(t, "", "init")
+	// gcp is a known provider (it passes the create guard), but with no
+	// gcp.project configured the provider cannot be built, so the error is
+	// about the project, not ErrNotImplemented.
+	r := run(t, "", "create", "demo", "--provider", "gcp")
+	if errors.Is(r.runErr, ErrNotImplemented) {
+		t.Fatalf("gcp should be an admitted provider, got %v", r.runErr)
+	}
+	if r.runErr == nil || !strings.Contains(r.runErr.Error(), "project") {
+		t.Fatalf("want a missing-project error, got %v", r.runErr)
+	}
+}
+
+func TestProviderSecretDataGCP(t *testing.T) {
+	dir := t.TempDir()
+	keyFile := filepath.Join(dir, "sa.json")
+	if err := os.WriteFile(keyFile, []byte(`{"type":"service_account"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := &app{cfg: &config.Config{GCP: config.GCP{CredentialsFile: keyFile}}}
+	data := a.providerSecretData(providerGCP)
+	want := base64.StdEncoding.EncodeToString([]byte(`{"type":"service_account"}`))
+	if data["GCP_B64ENCODED_CREDENTIALS"] != want {
+		t.Fatalf("providerSecretData(gcp) = %v, want GCP_B64ENCODED_CREDENTIALS=%s", data, want)
+	}
+	// With no credentials file, nothing is emitted.
+	a2 := &app{cfg: &config.Config{}}
+	if d := a2.providerSecretData(providerGCP); d != nil {
+		t.Fatalf("providerSecretData(gcp) with no creds = %v, want nil", d)
 	}
 }
 

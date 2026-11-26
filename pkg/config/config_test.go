@@ -58,6 +58,9 @@ func TestLoadMissingFileGivesDefaults(t *testing.T) {
 	if c.Providers[ProviderLinode].Version != DefaultLinodeVersion {
 		t.Errorf("linode default version = %q, want %q", c.Providers[ProviderLinode].Version, DefaultLinodeVersion)
 	}
+	if c.Providers[ProviderGCP].Version != DefaultGCPVersion {
+		t.Errorf("gcp default version = %q, want %q", c.Providers[ProviderGCP].Version, DefaultGCPVersion)
+	}
 	if c.EffectiveBackend() != BackendFile {
 		t.Errorf("backend = %s", c.EffectiveBackend())
 	}
