@@ -400,9 +400,17 @@ func TestNewValidation(t *testing.T) {
 }
 
 func TestFetchCommandQuoting(t *testing.T) {
-	got := fetchCommand("http://h/b/k?X-Amz-Signature=abc&x=1", "/opt/it's here/file")
+	got := fetchCommand("http://h/b/k?X-Amz-Signature=abc&x=1", "/opt/it's here/file", "")
 	want := `mkdir -p '/opt/it'\''s here' && curl --fail --silent --show-error --location --retry 5 --retry-delay 3 --output '/opt/it'\''s here/file' 'http://h/b/k?X-Amz-Signature=abc&x=1'`
 	if got != want {
 		t.Errorf("fetchCommand =\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestFetchCommandMode(t *testing.T) {
+	got := fetchCommand("http://h/k", "/etc/kubernetes/pki/ca.key", "0600")
+	want := `mkdir -p '/etc/kubernetes/pki' && curl --fail --silent --show-error --location --retry 5 --retry-delay 3 --output '/etc/kubernetes/pki/ca.key' 'http://h/k' && chmod '0600' '/etc/kubernetes/pki/ca.key'`
+	if got != want {
+		t.Errorf("fetchCommand with mode =\n%s\nwant\n%s", got, want)
 	}
 }

@@ -209,7 +209,7 @@ func (h *Host) Publish(ctx context.Context, cluster string, files []payload.File
 		}
 		fetches = append(fetches, payload.Fetch{
 			Path:    f.Path,
-			Command: fetchCommand(req.URL, f.Path),
+			Command: fetchCommand(req.URL, f.Path, f.Mode),
 		})
 	}
 	return fetches, nil
@@ -297,10 +297,16 @@ func validateCluster(name string) error {
 
 // fetchCommand is what cloud-init runs to download one file. It works with
 // nothing but curl and a POSIX shell; retries cover a store that is briefly
-// unreachable while the node's network settles.
-func fetchCommand(url, dest string) string {
-	return fmt.Sprintf("mkdir -p %s && curl --fail --silent --show-error --location --retry 5 --retry-delay 3 --output %s %s",
+// unreachable while the node's network settles. When mode is set it chmods the
+// file afterwards, so an offloaded key or script keeps the permissions the
+// inline write_files entry would have given it.
+func fetchCommand(url, dest, mode string) string {
+	cmd := fmt.Sprintf("mkdir -p %s && curl --fail --silent --show-error --location --retry 5 --retry-delay 3 --output %s %s",
 		shellQuote(path.Dir(dest)), shellQuote(dest), shellQuote(url))
+	if mode != "" {
+		cmd += " && chmod " + shellQuote(mode) + " " + shellQuote(dest)
+	}
+	return cmd
 }
 
 // shellQuote single-quotes s for a POSIX shell.

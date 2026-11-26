@@ -304,6 +304,35 @@ func machineTemplate(name string) *unstructured.Unstructured {
 	return u
 }
 
+func TestTagMachineTemplatesUsesAdditionalTags(t *testing.T) {
+	p := newTestProvider(&fakeEC2{}, Config{Region: "us-west-2"})
+	objs := []*unstructured.Unstructured{
+		machineTemplate("awse2e-control-plane"),
+		machineTemplate("awse2e-md-0"),
+		awsCluster("awse2e", "1.2.3.4"),
+	}
+	if err := p.TagMachineTemplates(objs, "awse2e"); err != nil {
+		t.Fatalf("TagMachineTemplates: %v", err)
+	}
+	for _, o := range objs[:2] {
+		tags, found, err := unstructured.NestedStringMap(o.Object, "spec", "template", "spec", "additionalTags")
+		if err != nil || !found {
+			t.Fatalf("%s: additionalTags not set (found=%v err=%v)", o.GetName(), found, err)
+		}
+		if tags[ClusterTagKey] != "awse2e" {
+			t.Errorf("%s: additionalTags[%s] = %q, want awse2e", o.GetName(), ClusterTagKey, tags[ClusterTagKey])
+		}
+		// The Proxmox-style string list must not be present; CAPA rejects it.
+		if _, found, _ := unstructured.NestedStringSlice(o.Object, "spec", "template", "spec", "tags"); found {
+			t.Errorf("%s: spec.template.spec.tags should not be set for AWS", o.GetName())
+		}
+	}
+	// Non-MachineTemplate objects are untouched.
+	if _, found, _ := unstructured.NestedStringMap(objs[2].Object, "spec", "template", "spec", "additionalTags"); found {
+		t.Error("AWSCluster should not get additionalTags")
+	}
+}
+
 func kubeadmControlPlane(name, infraRef string) *unstructured.Unstructured {
 	u := &unstructured.Unstructured{Object: map[string]any{
 		"spec": map[string]any{"machineTemplate": map[string]any{"spec": map[string]any{

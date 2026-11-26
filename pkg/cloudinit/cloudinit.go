@@ -49,7 +49,11 @@ type Options struct {
 	// Fetches replace files that were published to a payload host. Their
 	// commands run before anything else, and any contributed file at the same
 	// path is dropped from write_files.
-	Fetches  []payload.Fetch
+	Fetches []payload.Fetch
+	// Omit drops these contributed paths from write_files although no Fetch
+	// names them. It is for files delivered by other means than a per-file
+	// fetch, such as a single archive a Fetch command downloads and extracts.
+	Omit     []string
 	Timezone string
 }
 
@@ -94,7 +98,7 @@ func Build(contribs []controlplane.Contribution, opts Options) (*Bundle, error) 
 		instanceID = DeriveInstanceID(opts.Hostname)
 	}
 
-	fetched := make(map[string]bool, len(opts.Fetches))
+	fetched := make(map[string]bool, len(opts.Fetches)+len(opts.Omit))
 	var runcmd []string
 	for i, f := range opts.Fetches {
 		if f.Path == "" || f.Command == "" {
@@ -102,6 +106,9 @@ func Build(contribs []controlplane.Contribution, opts Options) (*Bundle, error) 
 		}
 		fetched[path.Clean(f.Path)] = true
 		runcmd = append(runcmd, f.Command)
+	}
+	for _, p := range opts.Omit {
+		fetched[path.Clean(p)] = true
 	}
 
 	files, err := mergeFiles(contribs, fetched)
