@@ -16,6 +16,7 @@ import (
 
 	"github.com/urfave/cli/v3"
 
+	"github.com/klotho-k8s/klotho"
 	"github.com/klotho-k8s/klotho/pkg/config"
 )
 
@@ -322,6 +323,44 @@ func isAccessDenied(err error) bool {
 	return strings.Contains(s, "access is denied") || strings.Contains(s, "exit status 5")
 }
 
+// countHyperVClusters returns how many klotho-tracked clusters use the hyperv
+// provider. The host agent is host-scoped shared infrastructure - one daemon
+// serves every klotho Hyper-V cluster on the box - so this count is the basis
+// for the "agent left running" note on cluster delete and the safety check on
+// agent uninstall. Reserved and unreadable records are not counted.
+func countHyperVClusters(ctx context.Context, deps klotho.Deps) (int, error) {
+	sums, err := klotho.List(ctx, deps)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, s := range sums {
+		if s.Error == "" && !s.Reserved && s.Provider == providerHyperv {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// noteHyperVDaemonAfterDelete prints, after a successful Hyper-V cluster
+// delete, that the shared host agent was intentionally left running - deleting
+// a cluster never touches the daemon. It counts the Hyper-V clusters that
+// remain so the note says whether others still need it, and, when none do,
+// points at the explicit uninstall command. It is informational only and never
+// removes anything.
+func noteHyperVDaemonAfterDelete(ctx context.Context, w interface{ Write([]byte) (int, error) }, deps klotho.Deps) {
+	n, err := countHyperVClusters(ctx, deps)
+	if err != nil {
+		_, _ = fmt.Fprintln(w, "Hyper-V agent left running (it is shared across every Hyper-V cluster on this host).")
+		return
+	}
+	if n > 0 {
+		_, _ = fmt.Fprintf(w, "Hyper-V agent left running - shared; %d other Hyper-V cluster(s) still use it.\n", n)
+		return
+	}
+	_, _ = fmt.Fprintln(w, "Hyper-V agent left running. No other Hyper-V clusters remain; run \"klotho hyperv-agent uninstall\" when you're done with this host.")
+}
+
 // newHyperVAgentCommand is "klotho hyperv-agent", with install and uninstall
 // subcommands that reuse the create path's install logic.
 func newHyperVAgentCommand() *cli.Command {
@@ -352,20 +391,48 @@ func newHyperVAgentCommand() *cli.Command {
 				},
 			},
 			{
-				Name:  "uninstall",
-				Usage: "Stop and remove the Hyper-V host agent Windows service",
+				Name: "uninstall",
+				Usage: "Stop and remove the Hyper-V host agent Windows service. The agent is " +
+					"shared across every klotho Hyper-V cluster on this host, so uninstall " +
+					"refuses while any cluster still uses it unless --force is given.",
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "binary", Usage: "path to hyperv-agent.exe"},
+					&cli.BoolFlag{Name: "force", Usage: "remove the agent even while klotho Hyper-V clusters still use it"},
+					&cli.BoolFlag{Name: "yes", Aliases: []string{"y"}, Usage: "skip the confirmation prompt"},
 				},
 				Action: func(ctx context.Context, c *cli.Command) error {
 					a, err := newApp(c)
 					if err != nil {
 						return err
 					}
-					bin := firstNonEmpty(c.String("binary"), a.cfg.Hyperv.AgentBinary, filepath.Join(DefaultAgentDataDir, "hyperv-agent.exe"))
 					if runtime.GOOS != "windows" {
 						return fmt.Errorf("hyperv agent uninstall is only supported on Windows")
 					}
+					// Safety check: the agent is host-scoped shared infrastructure.
+					// Never uninstall it out from under clusters that still need it.
+					// This is an explicit host-level action; a cluster delete never
+					// reaches here.
+					if !c.Bool("force") {
+						switch n, cerr := countHyperVClusters(ctx, a.deps()); {
+						case cerr != nil:
+							_, _ = fmt.Fprintf(stderr(c), "warning: could not check for Hyper-V clusters still using the agent: %v\n", cerr)
+						case n == 0:
+							// No cluster depends on it; proceed.
+						case c.Bool("yes"):
+							_, _ = fmt.Fprintf(stderr(c), "warning: %d klotho Hyper-V cluster(s) still use the shared agent; removing it anyway (--yes)\n", n)
+						case interactive(c):
+							_, _ = fmt.Fprintf(stderr(c), "%d klotho Hyper-V cluster(s) still use the shared Hyper-V agent. Remove it anyway? [y/N] ", n)
+							line, _ := bufio.NewReader(stdin(c)).ReadString('\n')
+							switch strings.ToLower(strings.TrimSpace(line)) {
+							case "y", "yes":
+							default:
+								return fmt.Errorf("aborted: the hyperv-agent is still used by %d klotho Hyper-V cluster(s)", n)
+							}
+						default:
+							return fmt.Errorf("refusing to uninstall the hyperv-agent: %d klotho Hyper-V cluster(s) still use it; delete them first, or pass --force to remove it anyway", n)
+						}
+					}
+					bin := firstNonEmpty(c.String("binary"), a.cfg.Hyperv.AgentBinary, filepath.Join(DefaultAgentDataDir, "hyperv-agent.exe"))
 					if _, err := os.Stat(bin); err != nil {
 						// Fall back to sc.exe delete when the exe is gone.
 						return runMaybeElevated(ctx, "sc.exe", []string{"delete", agentServiceName})

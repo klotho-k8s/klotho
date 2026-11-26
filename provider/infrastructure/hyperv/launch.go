@@ -24,6 +24,14 @@ const addressPoll = 5 * time.Second
 // an IPv4 address, and returns the node. The Cluster API Hyper-V provider later
 // adopts this VM because its name matches the HyperVMachine's spec.vmName and
 // it is running.
+//
+// The VM is created before the ISO is written so the VM's GUID can seed the
+// NoCloud meta-data instance-id. The adopted HyperVMachine's provider ID is
+// "hyperv://<guid>", and the cluster template sets the kubelet --provider-id to
+// "hyperv://{{ ds.meta_data.instance_id }}", so the instance-id must be that
+// same GUID for the Node's provider ID to match the Machine's and the
+// Machine↔Node nodeRef to complete (Hyper-V runs no cloud controller manager
+// to set it otherwise).
 func (p *Provider) Launch(ctx context.Context, spec *cluster.Spec, userData []byte) (*cluster.Node, error) {
 	if spec == nil || spec.Name == "" {
 		return nil, errorf("spec has no cluster name")
@@ -43,12 +51,7 @@ func (p *Provider) Launch(ctx context.Context, spec *cluster.Spec, userData []by
 		return nil, err
 	}
 
-	isoPath, err := p.writeISO(spec.Name, r, name, userData)
-	if err != nil {
-		return nil, err
-	}
-
-	node, err := p.launch(ctx, spec.Name, r, name, isoPath)
+	node, isoPath, err := p.launch(ctx, spec.Name, r, name, userData)
 	if err != nil {
 		p.cleanup(ctx, name, isoPath)
 		return nil, errorf("launching %q: %w", name, err)
@@ -57,12 +60,15 @@ func (p *Provider) Launch(ctx context.Context, spec *cluster.Spec, userData []by
 }
 
 // writeISO renders the NoCloud cidata ISO and writes it under the ISO
-// directory, returning its path.
-func (p *Provider) writeISO(clusterName string, r resolved, vmName string, userData []byte) (string, error) {
+// directory, returning its path. instanceID becomes the meta-data instance-id,
+// which the kubelet --provider-id resolves through
+// "{{ ds.meta_data.instance_id }}"; it is the VM's GUID so the Node's provider
+// ID matches the adopted HyperVMachine's.
+func (p *Provider) writeISO(clusterName string, r resolved, vmName, instanceID string, userData []byte) (string, error) {
 	md, err := json.Marshal(struct {
 		InstanceID    string `json:"instance-id"`
 		LocalHostname string `json:"local-hostname"`
-	}{InstanceID: cloudinit.DeriveInstanceID(vmName), LocalHostname: vmName})
+	}{InstanceID: instanceID, LocalHostname: vmName})
 	if err != nil {
 		return "", errorf("building meta-data: %w", err)
 	}
@@ -86,8 +92,11 @@ func (p *Provider) writeISO(clusterName string, r resolved, vmName string, userD
 	return path, nil
 }
 
-// launch creates, configures, starts the VM and waits for its address.
-func (p *Provider) launch(ctx context.Context, clusterName string, r resolved, name, isoPath string) (*cluster.Node, error) {
+// launch creates the VM, writes and attaches its NoCloud ISO (seeded with the
+// VM's GUID as the instance-id), configures, starts the VM and waits for its
+// address. It returns the ISO path even on a late failure so the caller can
+// clean it up.
+func (p *Provider) launch(ctx context.Context, clusterName string, r resolved, name string, userData []byte) (*cluster.Node, string, error) {
 	vm, err := p.client.CreateVM(ctx, CreateInput{
 		Name:       name,
 		Image:      r.Image,
@@ -99,26 +108,30 @@ func (p *Provider) launch(ctx context.Context, clusterName string, r resolved, n
 		SecureBoot: p.cfg.SecureBoot,
 	})
 	if err != nil {
-		return nil, err
+		return nil, "", err
+	}
+	isoPath, err := p.writeISO(clusterName, r, name, vm.ID, userData)
+	if err != nil {
+		return nil, "", err
 	}
 	if err := p.client.AttachISO(ctx, name, isoPath); err != nil {
-		return nil, err
+		return nil, isoPath, err
 	}
 	if err := p.client.SetFirmware(ctx, name, p.cfg.SecureBoot); err != nil {
-		return nil, err
+		return nil, isoPath, err
 	}
 	if err := p.client.StartVM(ctx, name); err != nil {
-		return nil, err
+		return nil, isoPath, err
 	}
 	addrs, err := p.waitForAddress(ctx, name)
 	if err != nil {
-		return nil, err
+		return nil, isoPath, err
 	}
 	return &cluster.Node{
 		ID:        ProviderIDPrefix + vm.ID,
 		Name:      name,
 		Addresses: addrs,
-	}, nil
+	}, isoPath, nil
 }
 
 // waitForAddress polls the guest until it reports at least one IPv4 address or

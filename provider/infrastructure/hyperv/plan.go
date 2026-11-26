@@ -95,17 +95,28 @@ func (p *Provider) Teardown(ctx context.Context, state *cluster.State, plan *inf
 	return errors.Join(errs...)
 }
 
-// LaunchDeletionSidecar finishes a fire-and-forget delete for Hyper-V by
-// removing node zero's VM, which Cluster API cannot. The in-cluster Cluster
-// API Hyper-V controller runs on the bootstrap VM (node zero) and so cannot
-// delete the VM it is running on; after the Cluster object is deleted that VM
-// is left behind, orphaned. klotho runs on the host, so this removes node
-// zero's VM and its cidata ISO directly over the host client - the same
-// operation the --watch sweep performs through Teardown - leaving no orphan.
+// LaunchDeletionSidecar is the host-side VM-destroy finisher for a
+// fire-and-forget Hyper-V delete: it removes node zero's VM, which Cluster API
+// cannot. The in-cluster Cluster API Hyper-V controller runs on the bootstrap
+// VM (node zero) and so cannot delete the VM it is running on; after the
+// Cluster object is deleted that VM is left behind, orphaned. klotho runs on
+// the host, so this removes node zero's VM and its cidata ISO directly over the
+// host client - the same operation the --watch sweep performs through Teardown
+// - leaving no orphan.
 //
 // It implements infrastructure.DeletionSidecar. "Sidecar" names the Proxmox
 // provider's detached in-infra reaper; on Hyper-V klotho is already on the
-// host, so the teardown runs in process rather than as a detached agent.
+// host, so the teardown runs in process rather than as a detached agent. It is
+// not a throwaway helper that stands anything up: it only destroys this
+// cluster's own node-zero VM and ISO.
+//
+// It destroys ONLY this cluster's bootstrap VM and cidata ISO. It never
+// installs, stops, removes, or otherwise touches the hyperv-agent host daemon.
+// That daemon is host-scoped shared infrastructure - one per Windows host,
+// serving every klotho Hyper-V cluster on it - so deleting one cluster must
+// leave it running for the others. Its lifecycle is a separate, explicit,
+// host-level concern (see "klotho hyperv-agent install/uninstall"), like
+// Docker or libvirtd, never a side effect of a cluster delete.
 //
 // It removes only the bootstrap VM, the last node Cluster API leaves behind.
 // Hyper-V clusters are single-control-plane dev clusters; a multi-node cluster

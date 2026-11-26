@@ -61,10 +61,21 @@ spec:
       nodeRegistration:
         criSocket: unix:///var/run/containerd/containerd.sock
         name: '{{ ds.meta_data.local_hostname }}'
+        # Hyper-V runs no cloud controller manager, so the kubelet must register
+        # its own provider ID. ds.meta_data.instance_id is the VM's GUID (klotho
+        # seeds the NoCloud meta-data with it), so this matches the adopted
+        # HyperVMachine's spec.providerID "hyperv://<guid>" and the Machine↔Node
+        # nodeRef completes.
+        kubeletExtraArgs:
+        - name: provider-id
+          value: "hyperv://'{{ ds.meta_data.instance_id }}'"
     joinConfiguration:
       nodeRegistration:
         criSocket: unix:///var/run/containerd/containerd.sock
         name: '{{ ds.meta_data.local_hostname }}'
+        kubeletExtraArgs:
+        - name: provider-id
+          value: "hyperv://'{{ ds.meta_data.instance_id }}'"
   machineTemplate:
     spec:
       infrastructureRef:
@@ -140,3 +151,9 @@ spec:
         nodeRegistration:
           criSocket: unix:///var/run/containerd/containerd.sock
           name: '{{ ds.meta_data.local_hostname }}'
+          # The in-cluster Cluster API Hyper-V controller seeds each worker's
+          # NoCloud meta-data instance-id with that VM's GUID, so this matches
+          # the worker HyperVMachine's "hyperv://<guid>" provider ID.
+          kubeletExtraArgs:
+          - name: provider-id
+            value: "hyperv://'{{ ds.meta_data.instance_id }}'"

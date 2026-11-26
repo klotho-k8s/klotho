@@ -1,6 +1,7 @@
 package hyperv
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -106,8 +107,15 @@ func TestLaunch(t *testing.T) {
 	if iso == "" {
 		t.Error("no ISO attached")
 	}
-	if _, err := os.Stat(iso); err != nil {
+	data, err := os.ReadFile(iso)
+	if err != nil {
 		t.Errorf("ISO not written: %v", err)
+	}
+	// The NoCloud meta-data instance-id must be the VM's GUID so the kubelet
+	// --provider-id ("hyperv://{{ ds.meta_data.instance_id }}") matches the
+	// adopted HyperVMachine's provider ID.
+	if !bytes.Contains(data, []byte(`"instance-id":"guid-1"`)) {
+		t.Errorf("ISO meta-data does not carry the VM GUID as instance-id")
 	}
 	if len(f.started) != 1 {
 		t.Errorf("VM not started: %v", f.started)

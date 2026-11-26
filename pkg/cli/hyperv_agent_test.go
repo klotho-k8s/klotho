@@ -7,7 +7,10 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/klotho-k8s/klotho"
+	"github.com/klotho-k8s/klotho/pkg/cluster"
 	"github.com/klotho-k8s/klotho/pkg/config"
+	filebackend "github.com/klotho-k8s/klotho/provider/backend/file"
 )
 
 // fakeProbe builds an agentProbe with fixed answers.
@@ -116,6 +119,57 @@ func TestCreateAcceptsHyperv(t *testing.T) {
 	r := run(t, "", "create", "demo", "--provider", "hyperv", "--no-install-agent")
 	if errors.Is(r.runErr, ErrNotImplemented) {
 		t.Fatalf("hyperv should be an accepted provider, got %v", r.runErr)
+	}
+}
+
+// TestCountHyperVClusters checks the count that drives the delete-time note
+// and the uninstall safety check: only non-reserved hyperv clusters count.
+func TestCountHyperVClusters(t *testing.T) {
+	isolate(t)
+	if r := run(t, "", "init"); r.runErr != nil {
+		t.Fatalf("init: %v\n%s", r.runErr, r.err)
+	}
+	cfg, err := config.Load("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	codec, err := cfg.Codec()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := filebackend.New(cfg.RecordsDir(), codec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := klotho.Deps{Store: store, Codec: codec}
+
+	save := func(name, provider string) {
+		t.Helper()
+		if ok, err := store.Reserve(t.Context(), name); err != nil || !ok {
+			t.Fatalf("reserve %s: %v %v", name, ok, err)
+		}
+		if provider == "" { // leave as a bare reservation
+			return
+		}
+		rec, err := codec.Seal(&cluster.State{Spec: cluster.Spec{Name: name, Provider: provider}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Save(t.Context(), name, rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	save("hv1", providerHyperv)
+	save("hv2", providerHyperv)
+	save("px1", providerProxmox)
+	save("pending", "") // reserved, no provider yet
+
+	n, err := countHyperVClusters(t.Context(), deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("countHyperVClusters = %d, want 2", n)
 	}
 }
 
