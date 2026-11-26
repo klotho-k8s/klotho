@@ -28,7 +28,7 @@ const cloudInitCapability = "cloud-init"
 // is a DNS name the user controls, pointed at node zero after it boots, with
 // the template's loadBalancerType left "external" so CAPL provisions no
 // NodeBalancer (see cluster-template.yaml and TESTING.md).
-func (p *Provider) Prepare(ctx context.Context, spec *cluster.Spec) (*infrastructure.Prepared, error) {
+func (p *Provider) Prepare(ctx context.Context, _ *cluster.Spec) (*infrastructure.Prepared, error) {
 	if p.cfg.Region == "" {
 		return nil, errorf("region is required (set linode.region)")
 	}

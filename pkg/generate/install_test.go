@@ -212,7 +212,7 @@ func TestInstallScriptProviderPackages(t *testing.T) {
 	pkg := strings.Index(script, "for p in qemu-guest-agent; do")
 	proxy := strings.Index(script, "01klotho-proxy")
 	early := strings.Index(script, "already installed; nothing to do")
-	if pkg < 0 || proxy < 0 || early < 0 || !(proxy < pkg && pkg < early) {
+	if pkg < 0 || proxy < 0 || early < 0 || (proxy >= pkg || pkg >= early) {
 		t.Fatalf("order proxy=%d packages=%d early-exit=%d:\n%s", proxy, pkg, early, script)
 	}
 	if !strings.Contains(script, `systemctl enable --now "$p"`) {

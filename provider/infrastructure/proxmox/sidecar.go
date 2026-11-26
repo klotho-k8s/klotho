@@ -69,10 +69,6 @@ type newAPIToken struct {
 	Value       string `json:"value"`
 }
 
-// rootfsSource returns the base Alpine minirootfs tarball (gzip-compressed
-// tar). It is a field so tests can inject a tiny tarball instead of fetching;
-// nil means fetchAlpineRootfs with the configured URL and digest.
-//
 // LaunchDeletionSidecar builds a throwaway Alpine LXC that finishes a cluster's
 // teardown and then removes itself, so klotho can return as soon as the Cluster
 // object is deleted. It is the default delete's counterpart to the in-process
@@ -559,7 +555,7 @@ var sidecarHTTPGet = func(ctx context.Context, url string) (io.ReadCloser, error
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil, fmt.Errorf("fetching %s: unexpected status %s", url, resp.Status)
 	}
 	return resp.Body, nil

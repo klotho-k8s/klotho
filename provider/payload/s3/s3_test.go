@@ -112,7 +112,7 @@ func (f *fakeStore) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func s3Error(w http.ResponseWriter, status int, code string) {
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(status)
-	fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?><Error><Code>%s</Code><Message>%s</Message></Error>`, code, code)
+	_, _ = fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?><Error><Code>%s</Code><Message>%s</Message></Error>`, code, code)
 }
 
 func (f *fakeStore) keys() []string {
@@ -263,7 +263,7 @@ func TestPublishAndRemove(t *testing.T) {
 			t.Fatal(err)
 		}
 		body, _ := io.ReadAll(res.Body)
-		res.Body.Close()
+		_ = res.Body.Close()
 		if res.StatusCode != http.StatusOK || !bytes.Equal(body, files[i].Content) {
 			t.Errorf("fetch %d GET: status %d, %d bytes", i, res.StatusCode, len(body))
 		}

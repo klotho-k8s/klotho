@@ -69,7 +69,7 @@ func freePort(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 	_, port, _ := net.SplitHostPort(l.Addr().String())
 	return port
 }
@@ -113,7 +113,7 @@ func startMinIO(t *testing.T) string {
 	for {
 		res, err := http.Get(endpoint + "/minio/health/live")
 		if err == nil {
-			res.Body.Close()
+			_ = res.Body.Close()
 			if res.StatusCode == http.StatusOK {
 				return endpoint
 			}
@@ -182,7 +182,7 @@ func TestE2EMinIO(t *testing.T) {
 			t.Fatalf("GET %s: %v", u, err)
 		}
 		body, err := io.ReadAll(res.Body)
-		res.Body.Close()
+		_ = res.Body.Close()
 		if err != nil || res.StatusCode != http.StatusOK {
 			t.Fatalf("GET %s: status %d, %v", u, res.StatusCode, err)
 		}
@@ -194,7 +194,7 @@ func TestE2EMinIO(t *testing.T) {
 		if res, err := http.Get(bad); err != nil {
 			t.Fatal(err)
 		} else {
-			res.Body.Close()
+			_ = res.Body.Close()
 			if res.StatusCode == http.StatusOK {
 				t.Errorf("fetch %d: tampered signature was accepted", i)
 			}

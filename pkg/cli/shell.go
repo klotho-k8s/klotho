@@ -67,7 +67,7 @@ func runShell(ctx context.Context, c *cli.Command) error {
 			return err
 		}
 		path := filepath.Join(dir, name+".kubeconfig")
-		fmt.Fprintf(stdout(c), "export KUBECONFIG=%s\n", shellQuote(path))
+		_, _ = fmt.Fprintf(stdout(c), "export KUBECONFIG=%s\n", shellQuote(path))
 		return nil
 	}
 
@@ -79,7 +79,7 @@ func runShell(ctx context.Context, c *cli.Command) error {
 		return err
 	}
 	path := f.Name()
-	defer os.Remove(path)
+	defer func() { _ = os.Remove(path) }()
 	if _, err := f.Write(kubeconfig); err != nil {
 		_ = f.Close()
 		return err
@@ -90,7 +90,7 @@ func runShell(ctx context.Context, c *cli.Command) error {
 
 	if len(command) == 0 {
 		sh := interactiveShell()
-		fmt.Fprintf(stderr(c), "klotho: shell for cluster %s (KUBECONFIG=%s); exit to leave\n", name, path)
+		_, _ = fmt.Fprintf(stderr(c), "klotho: shell for cluster %s (KUBECONFIG=%s); exit to leave\n", name, path)
 		command = sh
 	}
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...)

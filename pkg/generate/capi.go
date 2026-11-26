@@ -102,6 +102,8 @@ type OperatorProviderRef struct {
 	Kind, Namespace, Name string
 }
 
+// OperatorProviderRefs lists the operator provider objects klotho installs: the
+// core, bootstrap, control-plane and infrastructure providers, plus any extras.
 func (o CAPIOptions) OperatorProviderRefs() []OperatorProviderRef {
 	refs := []OperatorProviderRef{
 		{KindCoreProvider, CoreNamespace, CoreProviderName},
@@ -115,6 +117,8 @@ func (o CAPIOptions) OperatorProviderRefs() []OperatorProviderRef {
 	return refs
 }
 
+// OperatorGVK returns the GroupVersionKind for a Cluster API operator object of
+// the given kind.
 func OperatorGVK(kind string) schema.GroupVersionKind {
 	return schema.GroupVersionKind{Group: OperatorGroup, Version: OperatorVersion, Kind: kind}
 }

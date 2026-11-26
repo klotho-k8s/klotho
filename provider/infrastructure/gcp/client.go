@@ -64,7 +64,10 @@ type computeService struct {
 func NewClient(ctx context.Context, credsJSON []byte) (ComputeAPI, error) {
 	var opts []option.ClientOption
 	if len(credsJSON) > 0 {
-		opts = append(opts, option.WithCredentialsJSON(credsJSON))
+		// WithCredentialsJSON is the direct way to authenticate with a provided
+		// service-account key; the suggested replacement requires resolving
+		// scopes here, which compute.NewService already does by default.
+		opts = append(opts, option.WithCredentialsJSON(credsJSON)) //nolint:staticcheck // SA1019: documented path for a caller-provided key
 	}
 	svc, err := compute.NewService(ctx, opts...)
 	if err != nil {

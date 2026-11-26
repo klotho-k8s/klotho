@@ -1,3 +1,5 @@
+// Package kube is a thin client-go wrapper for applying and reading objects in
+// a target cluster.
 package kube
 
 import (
@@ -42,7 +44,7 @@ type Cluster interface {
 	List(ctx context.Context, gvk schema.GroupVersionKind, namespace string) ([]*unstructured.Unstructured, error)
 }
 
-// NewCluster returns a client-go Cluster for kubeconfig. Each request is
+// New returns a client-go Cluster for kubeconfig. Each request is
 // bounded by 30 seconds. Discovery is cached and refreshed when a kind is
 // not found, since Create installs CRDs while it runs.
 func New(_ context.Context, kubeconfig []byte) (Cluster, error) {

@@ -1,4 +1,4 @@
-// Package cmd defines the klotho command-line interface.
+// Package cli defines the klotho command-line interface.
 package cli
 
 import (

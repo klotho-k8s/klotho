@@ -68,7 +68,7 @@ func TestAuthAndHeaders(t *testing.T) {
 }
 
 func TestInsecureTLS(t *testing.T) {
-	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeData(t, w, []map[string]any{{"node": "pve1", "status": "online"}})
 	}))
 	// The strict client below fails the handshake on purpose; keep the

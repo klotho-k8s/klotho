@@ -243,7 +243,7 @@ func (s *Store) Load(ctx context.Context, name string) ([]byte, error) {
 		}
 		return nil, fmt.Errorf("s3 backend: load %s: %w", name, err)
 	}
-	defer out.Body.Close()
+	defer func() { _ = out.Body.Close() }()
 	b, err := io.ReadAll(out.Body)
 	if err != nil {
 		return nil, fmt.Errorf("s3 backend: load %s: %w", name, err)

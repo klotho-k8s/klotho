@@ -14,7 +14,7 @@ import (
 	"github.com/klotho-k8s/klotho/pkg/cluster"
 )
 
-var errPermissionDenied = errors.New("Permission check failed (/access/users, User.Modify)")
+var errPermissionDenied = errors.New("permission check failed (/access/users, User.Modify)")
 
 // makeRootfs builds a tiny gzip-compressed tar standing in for the Alpine
 // minirootfs: just an /etc/inittab and a marker file.
@@ -114,9 +114,9 @@ func TestInjectSweepNoDuplicatePaths(t *testing.T) {
 	if err := tw.WriteHeader(&tar.Header{Name: "etc/inittab", Typeflag: tar.TypeReg, Mode: 0o644, Size: 1}); err != nil {
 		t.Fatal(err)
 	}
-	tw.Write([]byte("\n"))
-	tw.Close()
-	gzw.Close()
+	_, _ = tw.Write([]byte("\n"))
+	_ = tw.Close()
+	_ = gzw.Close()
 
 	out, err := injectSweep(bytes.NewReader(buf.Bytes()), []byte("#!/bin/sh\n"), []byte("X='1'\n"), []byte("c"), []byte("j"))
 	if err != nil {

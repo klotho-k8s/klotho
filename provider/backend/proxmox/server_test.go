@@ -286,8 +286,8 @@ func writeRawConn(w http.ResponseWriter, code int, reason, body string) {
 		http.Error(w, reason, code)
 		return
 	}
-	defer conn.Close()
-	fmt.Fprintf(bufrw, "HTTP/1.1 %d %s\r\nContent-Type: application/json;charset=UTF-8\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
+	defer func() { _ = conn.Close() }()
+	_, _ = fmt.Fprintf(bufrw, "HTTP/1.1 %d %s\r\nContent-Type: application/json;charset=UTF-8\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
 		code, reason, len(body), body)
 	_ = bufrw.Flush()
 }

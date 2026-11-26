@@ -57,7 +57,7 @@ func (p *Provider) Plan(ctx context.Context, state *cluster.State) (*infrastruct
 
 // Teardown removes everything in the plan: every instance is deleted (and
 // waited out), then the reserved global address is released.
-func (p *Provider) Teardown(ctx context.Context, state *cluster.State, plan *infrastructure.Plan) error {
+func (p *Provider) Teardown(ctx context.Context, _ *cluster.State, plan *infrastructure.Plan) error {
 	if plan == nil {
 		return nil
 	}

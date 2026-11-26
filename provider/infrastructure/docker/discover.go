@@ -8,7 +8,7 @@ import (
 
 // Discover reports the Docker network the provider would use. It ensures
 // nothing; it only describes a choice a template can be prefilled with.
-func (p *Provider) Discover(ctx context.Context) (infrastructure.Inventory, error) {
+func (p *Provider) Discover(_ context.Context) (infrastructure.Inventory, error) {
 	net := p.network()
 	return infrastructure.Inventory{
 		"network": {{

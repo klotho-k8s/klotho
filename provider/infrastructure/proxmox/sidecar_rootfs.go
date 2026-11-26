@@ -119,7 +119,7 @@ func (p *Provider) buildSidecarTemplate(ctx context.Context, env map[string]stri
 	if err != nil {
 		return nil, err
 	}
-	defer base.Close()
+	defer func() { _ = base.Close() }()
 	curlBin, err := p.sidecarTool(ctx,
 		firstNonEmpty(p.cfg.Sidecar.CurlURL, DefaultSidecarCurlURL),
 		firstNonEmpty(p.cfg.Sidecar.CurlSHA256, DefaultSidecarCurlSHA256))
@@ -149,7 +149,7 @@ func (p *Provider) sidecarTool(ctx context.Context, url, sum string) ([]byte, er
 	if err != nil {
 		return nil, err
 	}
-	defer body.Close()
+	defer func() { _ = body.Close() }()
 	data, err := io.ReadAll(body)
 	if err != nil {
 		return nil, err
@@ -180,7 +180,7 @@ func (p *Provider) alpineRootfs(ctx context.Context) (io.ReadCloser, error) {
 	}
 	// Verify: the digest matters, so the whole tarball is buffered and checked
 	// before it is used.
-	defer body.Close()
+	defer func() { _ = body.Close() }()
 	data, err := io.ReadAll(body)
 	if err != nil {
 		return nil, err
@@ -205,7 +205,7 @@ func injectSweep(base io.Reader, script, envFile, curlBin, jqBin []byte) ([]byte
 	if err != nil {
 		return nil, fmt.Errorf("reading rootfs gzip: %w", err)
 	}
-	defer gzr.Close()
+	defer func() { _ = gzr.Close() }()
 
 	type entry struct {
 		hdr  *tar.Header

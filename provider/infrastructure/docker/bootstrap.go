@@ -87,7 +87,7 @@ func decodeContent(content, encoding string) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		defer zr.Close()
+		defer func() { _ = zr.Close() }()
 		return io.ReadAll(zr)
 	default:
 		return nil, fmt.Errorf("unsupported encoding %q", encoding)

@@ -94,9 +94,9 @@ const (
 var _ infrastructure.Provider = (*Provider)(nil)
 var _ provider.Checker = (*Provider)(nil)
 
-// LinodeAPI is the subset of the linodego client klotho uses, so it can be
+// API is the subset of the linodego client klotho uses, so it can be
 // faked in tests. *linodego.Client satisfies it.
-type LinodeAPI interface {
+type API interface {
 	CreateInstance(ctx context.Context, opts linodego.InstanceCreateOptions) (*linodego.Instance, error)
 	GetInstance(ctx context.Context, id int) (*linodego.Instance, error)
 	ListInstances(ctx context.Context, opts *linodego.ListOptions) ([]linodego.Instance, error)
@@ -146,7 +146,7 @@ type Config struct {
 
 // Provider implements infrastructure.Provider for Linode via CAPL.
 type Provider struct {
-	client LinodeAPI
+	client API
 	cfg    Config
 
 	launchPoll time.Duration
@@ -155,7 +155,7 @@ type Provider struct {
 
 // New returns a provider talking to Linode through client, normally built by
 // NewClient.
-func New(client LinodeAPI, cfg Config) *Provider {
+func New(client API, cfg Config) *Provider {
 	return &Provider{client: client, cfg: cfg, launchPoll: DefaultLaunchPoll, launchWait: DefaultLaunchWait}
 }
 
@@ -228,6 +228,3 @@ func hasClusterTag(tags []string, cluster string) bool {
 func errorf(format string, args ...any) error {
 	return fmt.Errorf("linode provider: "+format, args...)
 }
-
-// ptr returns a pointer to v, for the SDK's pointer fields.
-func ptr[T any](v T) *T { return &v }

@@ -47,7 +47,7 @@ func runProbe(ctx context.Context, c *cli.Command) error {
 		return err
 	}
 
-	fmt.Fprintln(out, "inventory:")
+	_, _ = fmt.Fprintln(out, "inventory:")
 	inv, err := infra.Discover(ctx)
 	if err != nil {
 		return fmt.Errorf("discover: %w", err)
@@ -61,7 +61,7 @@ func runProbe(ctx context.Context, c *cli.Command) error {
 	for _, k := range kinds {
 		items := inv[k]
 		if len(items) == 0 {
-			fmt.Fprintf(tw, "  %s\t(none visible)\t\n", k)
+			_, _ = fmt.Fprintf(tw, "  %s\t(none visible)\t\n", k)
 			continue
 		}
 		for _, it := range items {
@@ -70,7 +70,7 @@ func runProbe(ctx context.Context, c *cli.Command) error {
 				attrs = append(attrs, ak+"="+av)
 			}
 			sort.Strings(attrs)
-			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", k, it.ID, it.Name, strings.Join(attrs, " "))
+			_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", k, it.ID, it.Name, strings.Join(attrs, " "))
 		}
 	}
 	if err := tw.Flush(); err != nil {
@@ -84,15 +84,15 @@ func runProbe(ctx context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "\npool comment probe (temporary pool %q):\n", c.String("pool-id"))
+	_, _ = fmt.Fprintf(out, "\npool comment probe (temporary pool %q):\n", c.String("pool-id"))
 	res, err := proxmoxbackend.Probe(ctx, client, c.String("pool-id"))
 	if err != nil {
 		return fmt.Errorf("probe: %w", err)
 	}
-	fmt.Fprintf(out, "  largest comment that round-trips: %d bytes\n", res.MaxSize)
-	fmt.Fprintf(out, "  newlines survive: %v\n", res.NewlinesSurvive)
+	_, _ = fmt.Fprintf(out, "  largest comment that round-trips: %d bytes\n", res.MaxSize)
+	_, _ = fmt.Fprintf(out, "  newlines survive: %v\n", res.NewlinesSurvive)
 	for _, e := range res.Errors {
-		fmt.Fprintf(out, "  note: %s\n", e)
+		_, _ = fmt.Fprintf(out, "  note: %s\n", e)
 	}
 	return nil
 }

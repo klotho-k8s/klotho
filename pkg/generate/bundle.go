@@ -190,7 +190,7 @@ func Validate(b *Bundle, clusterName, requiredTag string) error {
 		problems = append(problems, fmt.Errorf("no %s Cluster object", ClusterGroup))
 	case 1:
 		if got := clusters[0].GetName(); got != clusterName {
-			problems = append(problems, fmt.Errorf("Cluster is named %q, expected %q", got, clusterName))
+			problems = append(problems, fmt.Errorf("cluster is named %q, expected %q", got, clusterName))
 		}
 	default:
 		problems = append(problems, fmt.Errorf("expected one %s Cluster object, found %d: %s",
