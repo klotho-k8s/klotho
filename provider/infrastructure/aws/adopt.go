@@ -91,6 +91,30 @@ func (p *Provider) Adopt(_ context.Context, state *cluster.State, bundle []*unst
 	return yaml.Marshal(m.Object)
 }
 
+// TagMachineTemplates records klotho's ownership tag on every infrastructure
+// MachineTemplate in the bundle, in CAPA's schema. It implements klotho's
+// optional machine-template tagging so the orchestrator does not fall back to
+// the default spec.template.spec.tags string list, which is a Proxmox schema
+// that CAPA's strict decoder rejects ("unknown field spec.template.spec.tags").
+// CAPA tags every machine it creates with spec.template.spec.additionalTags, so
+// worker instances carry klotho's ownership tag and Teardown finds them by it.
+func (p *Provider) TagMachineTemplates(objs []*unstructured.Unstructured, tag string) error {
+	for _, obj := range generate.Find(&generate.Bundle{Objects: objs}, generate.InfrastructureGroup, "MachineTemplate") {
+		tags, _, err := unstructured.NestedStringMap(obj.Object, "spec", "template", "spec", "additionalTags")
+		if err != nil {
+			return errorf("reading additionalTags of %s %q: %v", obj.GetKind(), obj.GetName(), err)
+		}
+		if tags == nil {
+			tags = map[string]string{}
+		}
+		tags[ClusterTagKey] = tag
+		if err := unstructured.SetNestedStringMap(obj.Object, tags, "spec", "template", "spec", "additionalTags"); err != nil {
+			return errorf("setting additionalTags of %s %q: %v", obj.GetKind(), obj.GetName(), err)
+		}
+	}
+	return nil
+}
+
 // controlPlaneTemplate returns the infrastructure MachineTemplate the control
 // plane references, and the control plane object, from the bundle.
 func controlPlaneTemplate(b *generate.Bundle) (*unstructured.Unstructured, *unstructured.Unstructured, error) {

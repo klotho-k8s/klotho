@@ -256,6 +256,16 @@ log "applying the CNI"
 retry 30 10 kubectl apply -f {{ .CNI }}
 retry 60 10 kubectl wait --for=condition=Ready nodes --all --timeout=10s
 
+# With an external cloud provider (AWS's cloud-provider=external) the kubelet
+# taints the node node.cloudprovider.kubernetes.io/uninitialized:NoSchedule
+# until a cloud controller manager initializes it. On a single bootstrap node
+# the CCM only arrives later with the cluster bundle, so that taint would block
+# cert-manager, the operator and the whole management stack from scheduling.
+# Remove it so bootstrap proceeds; the CCM still initializes this node and any
+# workers once it runs. A no-op where the taint is absent (no external provider).
+log "clearing the cloud-provider uninitialized taint for bootstrap"
+kubectl taint nodes --all node.cloudprovider.kubernetes.io/uninitialized:NoSchedule- 2>/dev/null || true
+
 log "applying cert-manager"
 retry 30 10 kubectl apply -f {{ .CertManager }}
 # cert-manager's manifest tolerates no taints, and until a worker joins the

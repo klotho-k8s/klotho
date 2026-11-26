@@ -300,7 +300,10 @@ sed -i -E 's/^([^#].*[[:space:]]swap[[:space:]].*)$/#\1/' /etc/fstab
 
 log "installing containerd from the distribution"
 retry apt-get update
-retry apt-get install -y --no-install-recommends ca-certificates curl gpg apt-transport-https containerd
+# conntrack, socat and ethtool are kubeadm preflight requirements that a plain
+# distribution cloud image (an AWS Ubuntu AMI, for example) does not ship;
+# without conntrack kubeadm init aborts at preflight.
+retry apt-get install -y --no-install-recommends ca-certificates curl gpg apt-transport-https containerd conntrack socat ethtool
 mkdir -p /etc/containerd
 containerd config default > /etc/containerd/config.toml
 sed -i -E 's/(SystemdCgroup\s*=\s*)false/\1true/' /etc/containerd/config.toml

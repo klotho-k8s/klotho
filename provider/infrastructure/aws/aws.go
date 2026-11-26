@@ -67,6 +67,12 @@ const (
 	DefaultInstanceType = "t3.large"
 	DefaultLaunchPoll   = 5 * time.Second
 	DefaultLaunchWait   = 5 * time.Minute
+	// UserDataMaxBytes is EC2's cap on raw (pre-base64) RunInstances user-data,
+	// 16 KiB. klotho's bootstrap user-data (the cluster CAs, the admin
+	// kubeconfig and the install scripts) is larger than this, so the aws
+	// provider reports the cap and Create offloads the files to the configured
+	// payload host, leaving only per-file fetch commands inline.
+	UserDataMaxBytes = 16 * 1024
 )
 
 // Template variables read into the generated bundle. They are the names CAPA's
@@ -217,6 +223,11 @@ func (p *Provider) instanceType() string {
 // Dependencies implements provider.Dependent: CAPA has no in-cluster
 // dependency like the Proxmox provider's IPAM.
 func (p *Provider) Dependencies() []provider.Dependency { return nil }
+
+// UserDataLimit implements infrastructure.UserDataLimiter: EC2 caps
+// RunInstances user-data at UserDataMaxBytes, so Create offloads the bootstrap
+// files to the payload host when the rendered user-data is larger.
+func (p *Provider) UserDataLimit() int { return UserDataMaxBytes }
 
 func errorf(format string, args ...any) error {
 	return fmt.Errorf("aws provider: "+format, args...)

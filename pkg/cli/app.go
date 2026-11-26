@@ -429,6 +429,13 @@ func (a *app) providerSecretData(provider string) map[string]string {
 			data["PROXMOX_ENDPOINT_DISCOVERY"] = "true"
 		}
 		return data
+	case providerAWS:
+		// CAPA's infrastructure-components.yaml substitutes
+		// ${AWS_B64ENCODED_CREDENTIALS}; the operator fails to install the
+		// provider if the variable is unset. klotho supplies it empty so CAPA
+		// falls back to the default AWS credential chain — the control-plane
+		// node's instance profile — rather than a baked-in credential.
+		return map[string]string{"AWS_B64ENCODED_CREDENTIALS": ""}
 	case providerLinode:
 		if t := a.cfg.Linode.Token; t != "" {
 			return map[string]string{"LINODE_TOKEN": t}

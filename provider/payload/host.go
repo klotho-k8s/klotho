@@ -81,6 +81,12 @@ type File struct {
 	// Path is where the file lands on the node.
 	Path    string
 	Content []byte
+	// Mode is the file's octal permission string (for example "0600"), as the
+	// inline write_files entry would have carried. A Host that cannot set it
+	// inline applies it after fetching, so an offloaded private key or script
+	// keeps the permissions it needs. Empty means the fetch leaves the
+	// default the download created.
+	Mode string
 }
 
 // Fetch tells the node how to retrieve one published file. The command must

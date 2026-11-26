@@ -1,7 +1,9 @@
 package klotho
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +11,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -20,6 +24,7 @@ import (
 	"github.com/klotho-k8s/klotho/provider"
 	"github.com/klotho-k8s/klotho/provider/controlplane"
 	"github.com/klotho-k8s/klotho/provider/infrastructure"
+	"github.com/klotho-k8s/klotho/provider/payload"
 )
 
 // ControlPlaneGroup is the API group of control plane objects.
@@ -128,6 +133,15 @@ type (
 	// the bootstrap machine. Without it the name is "<name>-bootstrap".
 	BootstrapNamer interface {
 		BootstrapMachineName(cluster string) string
+	}
+	// MachineTemplateTagger is implemented by infrastructure providers whose
+	// MachineTemplate does not carry klotho's ownership tag in the default
+	// spec.template.spec.tags string list (CAPA's AWSMachineTemplate uses a
+	// map-valued additionalTags field instead, and its strict decoder rejects
+	// an unknown "tags" field). klotho calls it to record the tag in the
+	// provider's own schema in place of the default.
+	MachineTemplateTagger interface {
+		TagMachineTemplates(objs []*unstructured.Unstructured, tag string) error
 	}
 )
 
@@ -251,13 +265,24 @@ func Create(ctx context.Context, deps Deps, req CreateRequest) (_ *cluster.State
 	// once the API server answers, so the list holds only non-empty
 	// contributions.
 	contribs := []controlplane.Contribution{*cpContrib}
-	ci, err := cloudinit.Build(contribs, cloudinit.Options{
+	ciOpts := cloudinit.Options{
 		Hostname:          bootstrapName(deps.ControlPlane, name),
 		SSHAuthorizedKeys: req.SSHAuthorizedKeys,
 		PackageUpdate:     false,
-	})
+	}
+	ci, err := cloudinit.Build(contribs, ciOpts)
 	if err != nil {
 		return nil, fmt.Errorf("building user-data: %w", err)
+	}
+	// Offload the bootstrap files to the payload host when the provider's
+	// user-data channel is too small for them. Providers whose channel has no
+	// practical cap (Proxmox's NoCloud ISO, for example) report no limit and
+	// keep everything inline. A dry run inspects the full inlined user-data and
+	// publishes nothing, so it is skipped there.
+	if req.DryRunDir == "" {
+		if ci, err = offloadUserData(ctx, deps, name, contribs, ci, ciOpts, log); err != nil {
+			return nil, err
+		}
 	}
 
 	if d, ok := deps.Infra.(provider.Dependent); ok {
@@ -299,6 +324,130 @@ func Create(ctx context.Context, deps Deps, req CreateRequest) (_ *cluster.State
 	}
 	log.Info("cluster ready", "endpoint", fmt.Sprintf("%s:%d", st.Endpoint.Host, st.Endpoint.Port))
 	return st, nil
+}
+
+// PayloadArchivePath is where the bootstrap node downloads the offloaded files
+// archive before extracting it.
+const PayloadArchivePath = "/run/klotho/payload.tar.gz"
+
+// offloadUserData shrinks the bootstrap node's user-data below the
+// infrastructure provider's channel cap by moving the contributed files into a
+// single gzip-compressed tar archive published to the payload host. The node
+// downloads the archive through one presigned URL and extracts it, so the
+// user-data carries one fetch command instead of every file, and no credential.
+// It returns ci unchanged when the provider reports no cap or the user-data
+// already fits. A capped provider over the limit with no payload host
+// configured is an error naming what to set.
+//
+// One archive, not one fetch per file: a presigned URL is long (~2 KB), so a
+// fetch per file would merely trade the file content for a comparable volume of
+// URLs. Bundling them is what actually fits a many-file payload (the cluster's
+// CAs, the admin kubeconfig and the install scripts) into AWS's 16 KB cap.
+func offloadUserData(ctx context.Context, deps Deps, name string, contribs []controlplane.Contribution,
+	ci *cloudinit.Bundle, ciOpts cloudinit.Options, log *slog.Logger) (*cloudinit.Bundle, error) {
+	limiter, ok := deps.Infra.(infrastructure.UserDataLimiter)
+	if !ok {
+		return ci, nil
+	}
+	limit := limiter.UserDataLimit()
+	if limit <= 0 || len(ci.UserData) <= limit {
+		return ci, nil
+	}
+	if deps.Payload == nil {
+		return nil, fmt.Errorf("the bootstrap user-data is %d bytes but provider %q caps it at %d; configure a payload host (set payload.kind: s3) so the large files are fetched at boot",
+			len(ci.UserData), deps.Infra.Name(), limit)
+	}
+
+	// Appended files have no single authoritative content to archive; they
+	// stay inline (they are small configuration fragments).
+	var omit []string
+	archive, count, err := archiveFiles(contribs, &omit)
+	if err != nil {
+		return nil, err
+	}
+	if count == 0 {
+		return nil, fmt.Errorf("the bootstrap user-data is %d bytes, over provider %q's %d-byte limit, but has no files to offload",
+			len(ci.UserData), deps.Infra.Name(), limit)
+	}
+	log.Info("user-data exceeds the provider's limit; offloading files to the payload host",
+		"bytes", len(ci.UserData), "limit", limit, "host", deps.Payload.Name(), "files", count, "archiveBytes", len(archive))
+
+	fetches, err := deps.Payload.Publish(ctx, name, []payload.File{{Path: PayloadArchivePath, Content: archive, Mode: "0600"}})
+	if err != nil {
+		return nil, fmt.Errorf("publishing the bootstrap payload archive: %w", err)
+	}
+
+	// Extract the archive to / (its entries are absolute paths with their
+	// original modes) after it is fetched and before any command uses the
+	// files, then remove it. A prepended contribution's PreCommands run after
+	// the fetch and before every other contribution's commands.
+	extract := controlplane.Contribution{PreCommands: []string{
+		"tar -xpzf " + PayloadArchivePath + " -C / && rm -f " + PayloadArchivePath,
+	}}
+
+	ciOpts.Fetches = fetches
+	ciOpts.Omit = omit
+	ci, err = cloudinit.Build(append([]controlplane.Contribution{extract}, contribs...), ciOpts)
+	if err != nil {
+		return nil, fmt.Errorf("rebuilding user-data with the payload archive: %w", err)
+	}
+	if len(ci.UserData) > limit {
+		return nil, fmt.Errorf("the bootstrap user-data is still %d bytes after offloading %d files, over the %d-byte limit of provider %q",
+			len(ci.UserData), count, limit, deps.Infra.Name())
+	}
+	log.Info("user-data offloaded", "bytes", len(ci.UserData), "files", count)
+	return ci, nil
+}
+
+// archiveFiles builds a gzip-compressed tar of every non-appended contributed
+// file, preserving each file's absolute path and mode, and appends those paths
+// to omit so they are dropped from the inline write_files. It returns the
+// archive and the number of files in it.
+func archiveFiles(contribs []controlplane.Contribution, omit *[]string) ([]byte, int, error) {
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	count := 0
+	for _, c := range contribs {
+		for _, f := range c.Files {
+			if f.Append {
+				continue
+			}
+			mode := parseFileMode(f.Mode)
+			if err := tw.WriteHeader(&tar.Header{
+				Name: strings.TrimPrefix(f.Path, "/"),
+				Mode: int64(mode),
+				Size: int64(len(f.Content)),
+			}); err != nil {
+				return nil, 0, fmt.Errorf("archiving %s: %w", f.Path, err)
+			}
+			if _, err := tw.Write(f.Content); err != nil {
+				return nil, 0, fmt.Errorf("archiving %s: %w", f.Path, err)
+			}
+			*omit = append(*omit, f.Path)
+			count++
+		}
+	}
+	if err := tw.Close(); err != nil {
+		return nil, 0, fmt.Errorf("closing payload archive: %w", err)
+	}
+	if err := gz.Close(); err != nil {
+		return nil, 0, fmt.Errorf("compressing payload archive: %w", err)
+	}
+	return buf.Bytes(), count, nil
+}
+
+// parseFileMode reads an octal mode string ("0600") into a permission value,
+// defaulting to 0644 when it is empty or unparseable.
+func parseFileMode(s string) uint32 {
+	if s == "" {
+		return 0o644
+	}
+	m, err := strconv.ParseUint(s, 8, 32)
+	if err != nil {
+		return 0o644
+	}
+	return uint32(m)
 }
 
 // buildBundle returns the user's manifest, validated and untouched, or a
@@ -345,7 +494,14 @@ func buildBundle(ctx context.Context, deps Deps, req CreateRequest, spec cluster
 	if err := generate.SetControlPlaneEndpoint(b, prepared.Endpoint); err != nil {
 		return nil, fmt.Errorf("bundle: %w", err)
 	}
-	if err := generate.AddMachineTemplateTag(b, tag); err != nil {
+	if tagger, ok := deps.Infra.(MachineTemplateTagger); ok {
+		if err := tagger.TagMachineTemplates(b.Objects, tag); err != nil {
+			return nil, fmt.Errorf("bundle: %w", err)
+		}
+		if _, err := b.Render(); err != nil {
+			return nil, fmt.Errorf("bundle: %w", err)
+		}
+	} else if err := generate.AddMachineTemplateTag(b, tag); err != nil {
 		return nil, fmt.Errorf("bundle: %w", err)
 	}
 	if req.Pool != "" {

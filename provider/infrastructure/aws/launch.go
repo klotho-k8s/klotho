@@ -3,10 +3,12 @@ package aws
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/smithy-go"
 
 	"github.com/klotho-k8s/klotho/pkg/cluster"
 )
@@ -114,6 +116,20 @@ func (p *Provider) waitRunning(ctx context.Context, id string) (*ec2types.Instan
 	for {
 		out, err := p.ec2.DescribeInstances(ctx, &ec2.DescribeInstancesInput{InstanceIds: []string{id}})
 		if err != nil {
+			// RunInstances returns before the instance is consistent in
+			// DescribeInstances, so a just-launched id can briefly read back as
+			// not found; keep polling rather than failing the launch.
+			if isInstanceNotFound(err) {
+				if !time.Now().Before(deadline) {
+					return nil, errorf("timed out waiting for instance %s to appear", id)
+				}
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(p.launchPoll):
+					continue
+				}
+			}
 			return nil, errorf("describing instance %s: %w", id, err)
 		}
 		inst := firstInstance(out)
@@ -167,6 +183,13 @@ func instanceTags(clusterName string) []ec2types.Tag {
 // clusterFilters match resources carrying klotho's ownership tag for a cluster.
 func clusterFilters(clusterName string) []ec2types.Filter {
 	return []ec2types.Filter{{Name: ptr("tag:" + ClusterTagKey), Values: []string{Tag(clusterName)}}}
+}
+
+// isInstanceNotFound reports whether err is EC2's InvalidInstanceID.NotFound,
+// which a just-launched instance returns until it is consistent.
+func isInstanceNotFound(err error) bool {
+	var apiErr smithy.APIError
+	return errors.As(err, &apiErr) && apiErr.ErrorCode() == "InvalidInstanceID.NotFound"
 }
 
 func firstInstance(out *ec2.DescribeInstancesOutput) *ec2types.Instance {

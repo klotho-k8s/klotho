@@ -75,6 +75,19 @@ type Provider interface {
 	Teardown(ctx context.Context, state *cluster.State, plan *Plan) error
 }
 
+// UserDataLimiter is implemented by an infrastructure provider whose user-data
+// channel has a hard size cap. Create renders the bootstrap node's user-data,
+// and when it exceeds the returned limit it offloads the contributed files to
+// the configured payload host, inlining only a small fetch command per file, so
+// the user-data fits. A provider whose channel has no practical cap does not
+// implement this (or returns 0) and its user-data is always inlined, even when
+// a payload host is configured.
+type UserDataLimiter interface {
+	// UserDataLimit is the maximum size, in bytes, of the raw (pre-base64)
+	// user-data the provider's channel accepts. Zero means no limit.
+	UserDataLimit() int
+}
+
 // DeletionSidecar is implemented by an infrastructure provider that, rather
 // than requiring klotho to watch a cluster's deletion through, can launch a
 // detached agent inside the infrastructure that finishes the teardown after
