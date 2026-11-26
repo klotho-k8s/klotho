@@ -16,6 +16,26 @@ onto it one turn at a time, until the thing is alive and spinning on its own.
 Then, like the Fate who only ever starts the thread, it steps back and leaves
 the cluster to live its own life.
 
+## Supported infrastructure providers
+
+klotho speaks Cluster API, so it runs wherever Cluster API does — from your
+homelab hypervisor to the big clouds. Six providers working today on one
+adapter contract, with vSphere, OpenStack and Hetzner next.
+
+| Provider | | Status | Live-tested |
+| --- | --- | --- | --- |
+| **Proxmox** | CAPMOX | ✅ Working | ✓ home lab |
+| **Docker** | CAPD | ✅ Working | ✓ podman |
+| **AWS** | CAPA | ✅ Working | ✓ |
+| **GCP** | CAPG | ✅ Working | help wanted |
+| **Azure** | CAPZ | ✅ Working | help wanted |
+| **Linode** | CAPL | ✅ Working | help wanted |
+| **Hyper-V** | CAPHV | 🧪 Experimental | single Windows node |
+| **Apple `vz`** | CAPVZ | 🧪 Scaffold | — |
+
+Full status, teardown details, and how to test a provider on **your**
+infrastructure: **[docs/PROVIDERS.md](docs/PROVIDERS.md)**.
+
 ## Build
 
 Builds run with [mage](https://magefile.org). Install it once with `go install
