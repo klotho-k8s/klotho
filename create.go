@@ -20,6 +20,7 @@ import (
 	"github.com/klotho-k8s/klotho/pkg/cloudinit"
 	"github.com/klotho-k8s/klotho/pkg/cluster"
 	"github.com/klotho-k8s/klotho/pkg/generate"
+	"github.com/klotho-k8s/klotho/pkg/kube"
 	"github.com/klotho-k8s/klotho/pkg/state"
 	"github.com/klotho-k8s/klotho/provider"
 	"github.com/klotho-k8s/klotho/provider/controlplane"
@@ -129,6 +130,13 @@ type (
 	// Tagger is implemented by infrastructure providers whose resources
 	// carry a per-cluster tag. Without it the tag is "klotho-<name>".
 	Tagger interface{ Tag(cluster string) string }
+	// UntaggedMachineTemplate is implemented by an infrastructure provider
+	// whose MachineTemplate CRD has no tag field, so klotho must not add
+	// spec.template.spec.tags to the generated bundle: a strict CRD schema
+	// (the Hyper-V provider's HyperVMachineTemplate) rejects the unknown field
+	// on apply, and the adopted machine would carry it too. Such a provider
+	// correlates its VMs for teardown by name instead of by template tag.
+	UntaggedMachineTemplate interface{ UntaggedMachineTemplate() bool }
 	// BootstrapNamer is implemented by control plane providers that name
 	// the bootstrap machine. Without it the name is "<name>-bootstrap".
 	BootstrapNamer interface {
@@ -309,6 +317,24 @@ func Create(ctx context.Context, deps Deps, req CreateRequest) (_ *cluster.State
 	}
 	st.Bootstrap = node
 	g.launched = true
+
+	// A provider with no load balancer (Hyper-V) cannot know the control plane
+	// endpoint until the node boots and claims a DHCP address. Now that it has,
+	// retarget the endpoint and the admin kubeconfig at the node so converge
+	// reaches the API server kubeadm brings up; the node's own IP is in the
+	// apiserver certificate SANs, so TLS to it verifies.
+	if ea, ok := deps.Infra.(infrastructure.EndpointFromBootstrap); ok {
+		if host := ea.EndpointFromBootstrap(node); host != "" && host != st.Endpoint.Host {
+			log.Info("retargeting the control plane endpoint at the bootstrap node", "from", st.Endpoint.Host, "to", host)
+			st.Endpoint.Host = host
+			kc, err := kube.RetargetServer(creds.Kubeconfig, st.Endpoint.Host, st.Endpoint.Port)
+			if err != nil {
+				return nil, fmt.Errorf("retargeting admin kubeconfig at the bootstrap node: %w", err)
+			}
+			creds.Kubeconfig = kc
+		}
+	}
+
 	rec, err := deps.Codec.Seal(st)
 	if err != nil {
 		return nil, fmt.Errorf("sealing state: %w", err)
@@ -501,8 +527,10 @@ func buildBundle(ctx context.Context, deps Deps, req CreateRequest, spec cluster
 		if _, err := b.Render(); err != nil {
 			return nil, fmt.Errorf("bundle: %w", err)
 		}
-	} else if err := generate.AddMachineTemplateTag(b, tag); err != nil {
-		return nil, fmt.Errorf("bundle: %w", err)
+	} else if u, ok := deps.Infra.(UntaggedMachineTemplate); !ok || !u.UntaggedMachineTemplate() {
+		if err := generate.AddMachineTemplateTag(b, tag); err != nil {
+			return nil, fmt.Errorf("bundle: %w", err)
+		}
 	}
 	if req.Pool != "" {
 		if err := generate.SetMachineTemplatePool(b, req.Pool); err != nil {

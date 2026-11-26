@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -754,6 +755,39 @@ func TestCreateAppliesExplicitPatchesToGeneratedBundle(t *testing.T) {
 	}
 	if content, _ := files[0].(map[string]any)["content"].(string); !strings.Contains(content, "http://cache.lan:3142") {
 		t.Error("install options not passed through")
+	}
+}
+
+func TestCreateSkipsMachineTemplateTagWhenUntagged(t *testing.T) {
+	mtGVK := schema.GroupVersionKind{Group: generate.InfrastructureGroup, Version: "v1alpha1", Kind: "FakeMachineTemplate"}
+	clusterTag := func(t *testing.T, h *harness) []string {
+		t.Helper()
+		mt, err := h.kube.Get(t.Context(), mtGVK, "default", "demo-control-plane")
+		if err != nil {
+			t.Fatal(err)
+		}
+		tags, _, _ := unstructured.NestedStringSlice(mt.Object, "spec", "template", "spec", "tags")
+		return tags
+	}
+
+	// By default klotho adds the per-cluster tag to the machine template.
+	h := newHarness(t)
+	if _, err := Create(t.Context(), h.deps, request()); err != nil {
+		t.Fatal(err)
+	}
+	if tags := clusterTag(t, h); !slices.Contains(tags, "klotho-demo") {
+		t.Errorf("default provider: expected klotho-demo in machine-template tags, got %v", tags)
+	}
+
+	// A provider that opts out (the strict Hyper-V CRD case) does not get the
+	// per-cluster tag appended, so the apply is not rejected for an unknown field.
+	h2 := newHarness(t)
+	h2.infra.untagged = true
+	if _, err := Create(t.Context(), h2.deps, request()); err != nil {
+		t.Fatal(err)
+	}
+	if tags := clusterTag(t, h2); slices.Contains(tags, "klotho-demo") {
+		t.Errorf("untagged provider: klotho-demo should not be appended, got %v", tags)
 	}
 }
 

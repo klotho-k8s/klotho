@@ -5,6 +5,8 @@ package kube
 import (
 	"context"
 	"fmt"
+	"net"
+	"strconv"
 	"sync"
 	"time"
 
@@ -42,6 +44,29 @@ type Cluster interface {
 	// List returns every object of a kind in a namespace. An empty namespace
 	// lists across all namespaces for a namespaced kind.
 	List(ctx context.Context, gvk schema.GroupVersionKind, namespace string) ([]*unstructured.Unstructured, error)
+}
+
+// RetargetServer rewrites every cluster server URL in a kubeconfig to
+// https://host:port and returns the re-serialized kubeconfig. klotho uses it
+// when the control plane endpoint is only known after the bootstrap node boots
+// (a DHCP address on a switch with no load balancer, as on Hyper-V): the admin
+// kubeconfig was minted against a placeholder, and this points it at the real
+// API server, whose serving certificate kubeadm issues with the node's own IP
+// in its SANs.
+func RetargetServer(kubeconfig []byte, host string, port int) ([]byte, error) {
+	cfg, err := clientcmd.Load(kubeconfig)
+	if err != nil {
+		return nil, fmt.Errorf("klotho: loading kubeconfig: %w", err)
+	}
+	server := "https://" + net.JoinHostPort(host, strconv.Itoa(port))
+	for _, c := range cfg.Clusters {
+		c.Server = server
+	}
+	out, err := clientcmd.Write(*cfg)
+	if err != nil {
+		return nil, fmt.Errorf("klotho: serializing kubeconfig: %w", err)
+	}
+	return out, nil
 }
 
 // New returns a client-go Cluster for kubeconfig. Each request is

@@ -40,6 +40,66 @@ func TestProviderObjectsFetchURL(t *testing.T) {
 	}
 }
 
+func TestProviderObjectsComponentsConfigMap(t *testing.T) {
+	objs, err := ProviderObjects(CAPIOptions{
+		Version:              "v1.12.9",
+		InfraProviderName:    "hyperv",
+		InfraProviderVersion: "v0.1.0",
+		// A local provider served over http: the operator would reject the URL,
+		// so klotho hands the components in directly to be embedded.
+		InfraFetchURL:   "http://172.30.32.1:8080/infrastructure-components.yaml",
+		InfraComponents: "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: caphv-system\n",
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var cm, infra *unstructured.Unstructured
+	for _, o := range objs {
+		switch o.GetKind() {
+		case "ConfigMap":
+			cm = o
+		case KindInfrastructureProvider:
+			infra = o
+		}
+	}
+	if cm == nil {
+		t.Fatal("no components ConfigMap emitted")
+	}
+	if infra == nil {
+		t.Fatal("no InfrastructureProvider emitted")
+	}
+
+	// The provider must select the ConfigMap, not carry a URL the operator rejects.
+	if _, found, _ := unstructured.NestedMap(infra.Object, "spec", "fetchConfig", "url"); found {
+		t.Error("infra provider still has a fetchConfig.url")
+	}
+	sel, found, err := unstructured.NestedStringMap(infra.Object, "spec", "fetchConfig", "selector", "matchLabels")
+	if err != nil || !found {
+		t.Fatalf("no fetchConfig.selector.matchLabels: found=%v err=%v", found, err)
+	}
+	if sel[ProviderNameLabel] != "hyperv" || sel[ProviderTypeLabel] != InfrastructureProviderType {
+		t.Errorf("selector matchLabels = %v", sel)
+	}
+
+	// The ConfigMap must carry the matching labels (including the version the
+	// operator checks) and both data keys.
+	labels := cm.GetLabels()
+	if labels[ProviderNameLabel] != "hyperv" || labels[ProviderTypeLabel] != InfrastructureProviderType || labels[ProviderVersionLabel] != "v0.1.0" {
+		t.Errorf("ConfigMap labels = %v", labels)
+	}
+	if cm.GetNamespace() != DefaultInfraNamespace("hyperv") {
+		t.Errorf("ConfigMap namespace = %q", cm.GetNamespace())
+	}
+	data, _, _ := unstructured.NestedStringMap(cm.Object, "data")
+	if !strings.Contains(data["components"], "caphv-system") {
+		t.Errorf("ConfigMap data.components = %q", data["components"])
+	}
+	if !strings.Contains(data["metadata"], "releaseSeries") || !strings.Contains(data["metadata"], "contract: v1beta1") {
+		t.Errorf("synthesized ConfigMap data.metadata = %q", data["metadata"])
+	}
+}
+
 func TestProviderObjectsTolerateControlPlane(t *testing.T) {
 	objs, err := ProviderObjects(CAPIOptions{Version: "v1.12.9", InfraProviderName: "proxmox", InfraProviderVersion: "v0.9.2"}, false)
 	if err != nil {

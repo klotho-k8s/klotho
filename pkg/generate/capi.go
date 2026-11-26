@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -40,6 +41,19 @@ const (
 	ControlPlaneComponents = "control-plane-components.yaml"
 )
 
+// Labels the Cluster API operator matches a components ConfigMap on. A
+// provider whose fetchConfig uses a selector is served from a ConfigMap
+// carrying these labels; the operator matches the selector and requires the
+// version label to equal the provider's spec.version.
+const (
+	ProviderNameLabel    = "provider.cluster.x-k8s.io/name"
+	ProviderTypeLabel    = "provider.cluster.x-k8s.io/type"
+	ProviderVersionLabel = "provider.cluster.x-k8s.io/version"
+	// InfrastructureProviderType is the operator's provider-type label value
+	// for an infrastructure provider.
+	InfrastructureProviderType = "infrastructure"
+)
+
 // CAPIOptions configure the Cluster API providers the operator installs on
 // the new cluster.
 type CAPIOptions struct {
@@ -56,8 +70,25 @@ type CAPIOptions struct {
 	InfraProviderName    string
 	InfraProviderVersion string
 	// InfraFetchURL, when set, is the full URL of the infrastructure
-	// provider's components file.
+	// provider's components file. The in-cluster Cluster API operator fetches
+	// it directly, so it must be an https or oci URL the operator accepts; a
+	// plain-http URL is rejected ("no provider implementation for \"http\"
+	// schema"). To serve a local, unpublished provider over http, set
+	// InfraComponents instead of (or as well as) this.
 	InfraFetchURL string
+	// InfraComponents, when set, is the infrastructure provider's rendered
+	// components manifest (its infrastructure-components.yaml). klotho embeds
+	// it in a labeled ConfigMap and points the provider's
+	// fetchConfig.selector at that ConfigMap rather than at InfraFetchURL. It
+	// is how a provider available only over a plain-http URL (a local,
+	// unpublished build) reaches the operator, which rejects an http
+	// fetchConfig URL but reads components from a ConfigMap on any scheme.
+	// When set, InfraFetchURL is ignored for the infrastructure provider.
+	InfraComponents string
+	// InfraMetadata is the provider's metadata.yaml, stored next to the
+	// components in the ConfigMap; the operator requires both keys. Empty
+	// synthesizes a minimal Metadata from InfraProviderVersion.
+	InfraMetadata string
 	// InfraImage, when set, replaces the provider manager's container image.
 	// The operator keeps the image repository it knows for a provider and
 	// only follows the version tag, so components fetched from another
@@ -224,7 +255,17 @@ func ProviderObjects(o CAPIOptions, redact bool) ([]*unstructured.Unstructured, 
 		provider(KindControlPlaneProvider, ControlPlaneNamespace, KubeadmProviderName, o.Version, fetch(ControlPlaneComponents)),
 	)
 	var infraFetch map[string]any
-	if o.InfraFetchURL != "" {
+	switch {
+	case o.InfraComponents != "":
+		// Serve the provider from a labeled ConfigMap instead of a URL: the
+		// operator reads components from the ConfigMap the selector matches,
+		// which works even for a provider available only over plain http.
+		objs = append(objs, componentsConfigMap(o, infraNS))
+		infraFetch = map[string]any{"selector": map[string]any{"matchLabels": map[string]any{
+			ProviderNameLabel: o.InfraProviderName,
+			ProviderTypeLabel: InfrastructureProviderType,
+		}}}
+	case o.InfraFetchURL != "":
 		infraFetch = map[string]any{"url": o.InfraFetchURL}
 	}
 	infra := provider(KindInfrastructureProvider, infraNS, o.InfraProviderName, o.InfraProviderVersion, infraFetch)
@@ -243,6 +284,53 @@ func ProviderObjects(o CAPIOptions, redact bool) ([]*unstructured.Unstructured, 
 		objs = append(objs, provider(d.Kind, d.Namespace, d.Name, d.Version, nil))
 	}
 	return objs, nil
+}
+
+// componentsConfigMap builds the ConfigMap the Cluster API operator reads an
+// infrastructure provider's components and metadata from when the provider is
+// served through a fetchConfig.selector rather than a URL. Its labels carry
+// the provider's name, type and version so the selector matches it and the
+// operator's version check (the version label must equal spec.version) passes.
+func componentsConfigMap(o CAPIOptions, ns string) *unstructured.Unstructured {
+	meta := o.InfraMetadata
+	if meta == "" {
+		meta = syntheticMetadata(o.InfraProviderVersion)
+	}
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1", "kind": "ConfigMap",
+		"metadata": map[string]any{
+			"name":      o.InfraProviderName + "-components-" + o.InfraProviderVersion,
+			"namespace": ns,
+			"labels": map[string]any{
+				ProviderNameLabel:    o.InfraProviderName,
+				ProviderTypeLabel:    InfrastructureProviderType,
+				ProviderVersionLabel: o.InfraProviderVersion,
+			},
+		},
+		"data": map[string]any{
+			"metadata":   meta,
+			"components": o.InfraComponents,
+		},
+	}}
+}
+
+// syntheticMetadata returns a minimal clusterctl Metadata for version, used
+// when the provider's own metadata.yaml is not supplied. The release series is
+// taken from the version's major and minor; the contract is the Cluster API
+// contract klotho targets (v1beta1).
+func syntheticMetadata(version string) string {
+	major, minor := 0, 0
+	if parts := strings.SplitN(strings.TrimPrefix(version, "v"), ".", 3); len(parts) >= 2 {
+		major, _ = strconv.Atoi(parts[0])
+		minor, _ = strconv.Atoi(parts[1])
+	}
+	return fmt.Sprintf(`apiVersion: clusterctl.cluster.x-k8s.io/v1alpha3
+kind: Metadata
+releaseSeries:
+- major: %d
+  minor: %d
+  contract: v1beta1
+`, major, minor)
 }
 
 // RenderYAML renders objects as a multi-document manifest.

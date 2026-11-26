@@ -125,6 +125,7 @@ const (
 	JinjaDoneMarker   = "/run/klotho/jinja-rendered"
 	UsersScript       = "/run/klotho/users.sh"
 	PostInitScript    = "/run/klotho/post-init.sh"
+	EndpointFixScript = "/run/kubeadm/endpoint-fix.sh"
 	AdminKubeconfig   = "/etc/kubernetes/admin.conf"
 
 	sentinelPlaceholder = "/run/cluster-api/placeholder"
@@ -216,6 +217,11 @@ func InfraMachineKind(provider string) string {
 		return "AzureMachine"
 	case "gcp":
 		return "GCPMachine"
+	case "hyperv":
+		// The default title-caser below would yield "HypervMachine", but the
+		// Cluster API Hyper-V provider's CRD kind is "HyperVMachine" (capital
+		// V); adoption references this kind by name, so it must match exactly.
+		return "HyperVMachine"
 	}
 	return strings.ToUpper(provider[:1]) + provider[1:] + "Machine"
 }
@@ -407,6 +413,13 @@ func (p *Provider) UserData(_ context.Context, spec *cluster.Spec, creds *contro
 	if err != nil {
 		return nil, err
 	}
+
+	// Before kubeadm init: if the control-plane endpoint is not an address this
+	// node holds (a DHCP node whose endpoint could only be a placeholder before
+	// boot), point it at this node's primary IPv4 so every kubeadm init phase
+	// reaches the local API server and the cluster comes up complete.
+	addFile(controlplane.File{Path: EndpointFixScript, Content: []byte(endpointFixScript), Mode: "0700", Owner: "root:root"})
+	c.PreCommands = append(c.PreCommands, runBash(EndpointFixScript))
 
 	if jinja.needed() {
 		addFile(controlplane.File{Path: JinjaScript, Content: jinja.script(), Mode: "0700", Owner: "root:root"})

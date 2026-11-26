@@ -27,6 +27,7 @@ import (
 	azureprovider "github.com/klotho-k8s/klotho/provider/infrastructure/azure"
 	dockerprovider "github.com/klotho-k8s/klotho/provider/infrastructure/docker"
 	gcpprovider "github.com/klotho-k8s/klotho/provider/infrastructure/gcp"
+	hypervprovider "github.com/klotho-k8s/klotho/provider/infrastructure/hyperv"
 	linodeprovider "github.com/klotho-k8s/klotho/provider/infrastructure/linode"
 	proxmoxprovider "github.com/klotho-k8s/klotho/provider/infrastructure/proxmox"
 	"github.com/klotho-k8s/klotho/provider/payload"
@@ -41,6 +42,7 @@ const (
 	providerGCP     = "gcp"
 	providerAzure   = "azure"
 	providerDocker  = "docker"
+	providerHyperv  = "hyperv"
 	cpKubeadm       = "kubeadm"
 )
 
@@ -423,8 +425,20 @@ func (a *app) infra(provider string) (infrastructure.Provider, error) {
 			Socket:       d.Socket,
 			CleanupImage: d.CleanupImage,
 		})}, nil
+	case providerHyperv:
+		h := a.cfg.Hyperv
+		return hypervInfra{hypervprovider.New(nil, hypervprovider.Config{
+			Switch:       h.Switch,
+			Image:        h.Image,
+			VMPath:       h.VMPath,
+			ISODir:       h.ISODir,
+			MemoryMiB:    h.MemoryMiB,
+			CPUs:         h.CPUs,
+			EndpointHost: h.EndpointHost,
+			SecureBoot:   h.SecureBoot,
+		})}, nil
 	default:
-		return nil, fmt.Errorf("infrastructure provider %q: %w (available: %s, %s, %s, %s, %s, %s)", provider, ErrNotImplemented, providerProxmox, providerDocker, providerAWS, providerLinode, providerGCP, providerAzure)
+		return nil, fmt.Errorf("infrastructure provider %q: %w (available: %s, %s, %s, %s, %s, %s, %s)", provider, ErrNotImplemented, providerProxmox, providerDocker, providerAWS, providerLinode, providerGCP, providerAzure, providerHyperv)
 	}
 }
 
@@ -495,6 +509,22 @@ func (a *app) providerSecretData(provider string) map[string]string {
 		if len(data) > 0 {
 			return data
 		}
+	case providerHyperv:
+		h := a.cfg.Hyperv
+		data := map[string]string{}
+		if ep := h.ResolvedAgentEndpoint(); ep != "" {
+			data["HYPERV_AGENT_ENDPOINT"] = ep
+		}
+		if ca, err := h.ResolvedAgentCA(); err == nil && ca != "" {
+			data["HYPERV_AGENT_CA"] = ca
+		}
+		if tok, err := h.ResolvedAgentToken(); err == nil && tok != "" {
+			data["HYPERV_AGENT_TOKEN"] = tok
+		}
+		if len(data) == 0 {
+			return nil
+		}
+		return data
 	}
 	return nil
 }
@@ -530,6 +560,11 @@ type dockerInfra struct{ *dockerprovider.Provider }
 
 func (dockerInfra) Tag(cluster string) string { return dockerprovider.Tag(cluster) }
 
+// hypervInfra adds the provider's tag convention to the Hyper-V provider.
+type hypervInfra struct{ *hypervprovider.Provider }
+
+func (hypervInfra) Tag(cluster string) string { return hypervprovider.Tag(cluster) }
+
 // kubeadmProvider adds the kubeadm provider's bootstrap machine naming.
 type kubeadmProvider struct{ *kubeadm.Provider }
 
@@ -543,6 +578,7 @@ var (
 	_ klotho.Tagger           = linodeInfra{}
 	_ klotho.Tagger           = gcpInfra{}
 	_ klotho.Tagger           = azureInfra{}
+	_ klotho.Tagger           = hypervInfra{}
 	_ klotho.BootstrapNamer   = kubeadmProvider{}
 	_ controlplane.Provider   = kubeadmProvider{}
 	_ infrastructure.Provider = proxmoxInfra{}
@@ -550,6 +586,7 @@ var (
 	_ infrastructure.Provider = linodeInfra{}
 	_ infrastructure.Provider = gcpInfra{}
 	_ infrastructure.Provider = azureInfra{}
+	_ infrastructure.Provider = hypervInfra{}
 )
 
 func firstNonEmpty(s ...string) string {

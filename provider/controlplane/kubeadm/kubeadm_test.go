@@ -232,6 +232,43 @@ func TestPrepareRejectsMissingInputs(t *testing.T) {
 	}
 }
 
+func TestEndpointFixScript(t *testing.T) {
+	p := testProvider()
+	creds := prepare(t, p)
+	cp := controlPlaneObject(t, testKCP)
+	c, err := p.UserData(context.Background(), testSpec(), creds, cp, nil)
+	if err != nil {
+		t.Fatalf("UserData: %v", err)
+	}
+	var fix *controlplane.File
+	for i := range c.Files {
+		if c.Files[i].Path == EndpointFixScript {
+			fix = &c.Files[i]
+		}
+	}
+	if fix == nil {
+		t.Fatalf("no %s among the files", EndpointFixScript)
+	}
+	if fix.Mode != "0700" || fix.Owner != "root:root" {
+		t.Errorf("endpoint-fix file = mode %s owner %s", fix.Mode, fix.Owner)
+	}
+	body := string(fix.Content)
+	for _, want := range []string{
+		"controlPlaneEndpoint:",   // reads the configured endpoint
+		"ip -4 -o addr show",      // tests whether the endpoint is local
+		"ip -4 route get 1.1.1.1", // discovers this node's primary IPv4
+		"sed -i -E",               // rewrites the config in place
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("endpoint-fix script lacks %q", want)
+		}
+	}
+	// It must run before kubeadm init.
+	if len(c.PreCommands) == 0 || c.PreCommands[0] != "/bin/bash "+EndpointFixScript {
+		t.Errorf("endpoint-fix must be the first pre-kubeadm command: %v", c.PreCommands)
+	}
+}
+
 func TestUserData(t *testing.T) {
 	p := testProvider()
 	creds := prepare(t, p)
@@ -437,7 +474,7 @@ func TestUserData(t *testing.T) {
 
 	t.Run("commands", func(t *testing.T) {
 		// Scripts under /run are handed to an interpreter: /run is noexec.
-		wantPre := []string{"/bin/bash " + JinjaScript, "/bin/bash " + UsersScript, "/etc/kube-vip-prepare.sh", "/bin/sh " + CommandsDir + "/pre-01.sh"}
+		wantPre := []string{"/bin/bash " + EndpointFixScript, "/bin/bash " + JinjaScript, "/bin/bash " + UsersScript, "/etc/kube-vip-prepare.sh", "/bin/sh " + CommandsDir + "/pre-01.sh"}
 		if !slices.Equal(c.PreCommands, wantPre) {
 			t.Errorf("PreCommands = %v, want %v", c.PreCommands, wantPre)
 		}
@@ -483,7 +520,7 @@ func TestUserData(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if runcmd, _ := doc["runcmd"].([]any); len(runcmd) != 7 {
+		if runcmd, _ := doc["runcmd"].([]any); len(runcmd) != 8 {
 			t.Errorf("runcmd = %v", runcmd)
 		}
 	})
@@ -690,6 +727,8 @@ func TestInfraMachineKind(t *testing.T) {
 		"proxmox": "ProxmoxMachine",
 		"Proxmox": "ProxmoxMachine",
 		"docker":  "DockerMachine",
+		"hyperv":  "HyperVMachine",
+		"Hyperv":  "HyperVMachine",
 		"foo":     "FooMachine",
 		"":        "",
 	} {
@@ -830,7 +869,7 @@ func TestUserDataWithInstallScript(t *testing.T) {
 		!strings.HasPrefix(string(script.Content), "#!/usr/bin/env bash\n") || !strings.Contains(string(script.Content), `WANT_VERSION="1.33.4"`) {
 		t.Errorf("script file = mode %s owner %s append %v, content starts %q", script.Mode, script.Owner, script.Append, string(script.Content[:40]))
 	}
-	wantPre := []string{"/bin/bash " + JinjaScript, "/bin/bash " + UsersScript, generate.InstallScriptPath, "/etc/kube-vip-prepare.sh", "/bin/sh " + CommandsDir + "/pre-02.sh"}
+	wantPre := []string{"/bin/bash " + EndpointFixScript, "/bin/bash " + JinjaScript, "/bin/bash " + UsersScript, generate.InstallScriptPath, "/etc/kube-vip-prepare.sh", "/bin/sh " + CommandsDir + "/pre-02.sh"}
 	if !slices.Equal(c.PreCommands, wantPre) {
 		t.Errorf("PreCommands = %v, want %v", c.PreCommands, wantPre)
 	}

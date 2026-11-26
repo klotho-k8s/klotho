@@ -298,7 +298,10 @@ log "disabling swap"
 swapoff -a || true
 sed -i -E 's/^([^#].*[[:space:]]swap[[:space:]].*)$/#\1/' /etc/fstab
 
-log "installing containerd from the distribution"
+log "installing containerd and kubeadm's runtime dependencies from the distribution"
+# conntrack is a fatal kubeadm preflight requirement and socat is needed for
+# port-forward; neither ships in the generic cloud images, so install them here
+# or kubeadm init aborts at preflight ("conntrack not found in system path").
 retry apt-get update
 # conntrack, socat and ethtool are kubeadm preflight requirements that a plain
 # distribution cloud image (an AWS Ubuntu AMI, for example) does not ship;

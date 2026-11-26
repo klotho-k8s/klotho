@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -27,7 +29,7 @@ func newCreateCommand() *cli.Command {
 			&cli.StringFlag{
 				Name:     "provider",
 				Aliases:  []string{"p"},
-				Usage:    "infrastructure provider (proxmox, docker, aws, linode, gcp, azure)",
+				Usage:    "infrastructure provider (proxmox, docker, aws, linode, gcp, azure, hyperv)",
 				Required: true,
 			},
 			&cli.StringFlag{
@@ -91,6 +93,15 @@ func newCreateCommand() *cli.Command {
 				Name:  "force",
 				Usage: "create even when a provider reports findings about the cluster manifest (they are still printed; the manifest is never changed)",
 			},
+			&cli.BoolFlag{
+				Name:    "yes",
+				Aliases: []string{"y"},
+				Usage:   "assume yes to prompts, e.g. installing the Hyper-V host agent",
+			},
+			&cli.BoolFlag{
+				Name:  "no-install-agent",
+				Usage: "never install the Hyper-V host agent; fail if it is not already present",
+			},
 		},
 		Action: runCreate,
 	}
@@ -102,8 +113,8 @@ func runCreate(ctx context.Context, c *cli.Command) error {
 		return err
 	}
 	provider, cp := c.String("provider"), c.String("control-plane")
-	if provider != providerProxmox && provider != providerDocker && provider != providerAWS && provider != providerLinode && provider != providerGCP && provider != providerAzure {
-		return fmt.Errorf("create: infrastructure provider %q: %w (available: %s, %s, %s, %s, %s, %s)", provider, ErrNotImplemented, providerProxmox, providerDocker, providerAWS, providerLinode, providerGCP, providerAzure)
+	if provider != providerProxmox && provider != providerDocker && provider != providerAWS && provider != providerLinode && provider != providerGCP && provider != providerAzure && provider != providerHyperv {
+		return fmt.Errorf("create: infrastructure provider %q: %w (available: %s, %s, %s, %s, %s, %s, %s)", provider, ErrNotImplemented, providerProxmox, providerDocker, providerAWS, providerLinode, providerGCP, providerAzure, providerHyperv)
 	}
 	if cp != cpKubeadm {
 		return fmt.Errorf("create: control plane provider %q: %w (available: %s)", cp, ErrNotImplemented, cpKubeadm)
@@ -122,6 +133,11 @@ func runCreate(ctx context.Context, c *cli.Command) error {
 	a, err := newApp(c)
 	if err != nil {
 		return err
+	}
+	if provider == providerHyperv {
+		if err := a.ensureHyperVAgent(ctx, c); err != nil {
+			return err
+		}
 	}
 	kubeVersion := c.String("kubernetes-version")
 	if kubeVersion == "" {
@@ -163,6 +179,9 @@ func runCreate(ctx context.Context, c *cli.Command) error {
 		DefaultVariables:  a.cfg.Variables,
 		SSHAuthorizedKeys: a.cfg.SSHAuthorizedKeys,
 	}
+	if err := a.embedLocalComponents(ctx, c, &req.CAPI); err != nil {
+		return err
+	}
 	if d := c.Duration("wait-timeout"); d > 0 {
 		req.Timeouts = klotho.Timeouts{APIServer: d, Providers: d, Apply: d, Node: d}
 	}
@@ -181,6 +200,56 @@ func runCreate(ctx context.Context, c *cli.Command) error {
 	}
 	_, _ = fmt.Fprintln(stdout(c), credential.ServerURL(st.Endpoint))
 	return nil
+}
+
+// embedLocalComponents handles an infrastructure provider served over a plain
+// http URL, which the in-cluster Cluster API operator refuses to fetch ("no
+// provider implementation for \"http\" schema") - the case for a local,
+// unpublished provider build such as the Hyper-V provider. It downloads the
+// components (and the sibling metadata.yaml) and moves them onto
+// o.InfraComponents/InfraMetadata, so ProviderObjects embeds them in a labeled
+// ConfigMap and points fetchConfig.selector at it instead of a URL. An https
+// or oci URL is left untouched for the operator to fetch itself.
+func (a *app) embedLocalComponents(ctx context.Context, c *cli.Command, o *generate.CAPIOptions) error {
+	raw := o.InfraFetchURL
+	if raw == "" {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "http" {
+		return nil
+	}
+	comp, err := fetchComponents(ctx, raw)
+	if err != nil {
+		return fmt.Errorf("fetching %s for a local-provider ConfigMap: %w", raw, err)
+	}
+	o.InfraComponents = string(comp)
+	o.InfraFetchURL = ""
+	metaURL := raw[:strings.LastIndex(raw, "/")+1] + "metadata.yaml"
+	if meta, err := fetchComponents(ctx, metaURL); err == nil {
+		o.InfraMetadata = string(meta)
+	} else {
+		_, _ = fmt.Fprintf(stderr(c), "hyperv: no metadata.yaml at %s (%v); synthesizing one from the version\n", metaURL, err)
+	}
+	_, _ = fmt.Fprintf(stderr(c), "%s: embedding the locally served components in a ConfigMap (%d bytes); the operator reads it via fetchConfig.selector\n", o.InfraProviderName, len(comp))
+	return nil
+}
+
+// fetchComponents GETs url and returns its body, failing on a non-2xx status.
+func fetchComponents(ctx context.Context, url string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode/100 != 2 {
+		return nil, fmt.Errorf("GET %s: %s", url, resp.Status)
+	}
+	return io.ReadAll(resp.Body)
 }
 
 // installKubernetes decides whether the install-at-boot script goes into the
