@@ -81,7 +81,7 @@ func TestLaunchDeletionSidecarNeedsSocket(t *testing.T) {
 	}
 }
 
-func TestProviderImplementsDeletionSidecar(t *testing.T) {
+func TestProviderImplementsDeletionSidecar(_ *testing.T) {
 	var _ infrastructure.DeletionSidecar = newProvider(newFakeRuntime())
 }
 

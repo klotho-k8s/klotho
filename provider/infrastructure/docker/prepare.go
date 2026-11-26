@@ -65,11 +65,11 @@ func (p *Provider) Prepare(ctx context.Context, spec *cluster.Spec) (*infrastruc
 	// the container network. The load balancer also publishes its port to an
 	// ephemeral host port, which the host can reach; report it as the
 	// host-reachable client endpoint so klotho dials it for its own API calls.
-	if clientHost, clientPort, err := p.rt.PublishedPort(ctx, lb, DefaultPort); err != nil {
+	clientHost, clientPort, err := p.rt.PublishedPort(ctx, lb, DefaultPort)
+	if err != nil {
 		return nil, errorf("reading the load balancer's published host port: %v", err)
-	} else {
-		prepared.ClientEndpoint = cluster.Endpoint{Host: clientHost, Port: clientPort}
 	}
+	prepared.ClientEndpoint = cluster.Endpoint{Host: clientHost, Port: clientPort}
 
 	return prepared, nil
 }

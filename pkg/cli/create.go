@@ -176,10 +176,10 @@ func runCreate(ctx context.Context, c *cli.Command) error {
 		return err
 	}
 	if req.DryRunDir != "" {
-		fmt.Fprintln(stdout(c), req.DryRunDir)
+		_, _ = fmt.Fprintln(stdout(c), req.DryRunDir)
 		return nil
 	}
-	fmt.Fprintln(stdout(c), credential.ServerURL(st.Endpoint))
+	_, _ = fmt.Fprintln(stdout(c), credential.ServerURL(st.Endpoint))
 	return nil
 }
 

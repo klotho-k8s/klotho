@@ -169,7 +169,9 @@ func TestUploadISOMultipartStreaming(t *testing.T) {
 			if err != nil {
 				t.Errorf("reading rest: %v", err)
 			}
-			got := append(head, rest...)
+			got := make([]byte, 0, len(head)+len(rest))
+			got = append(got, head...)
+			got = append(got, rest...)
 			if len(got) != size {
 				t.Errorf("received %d bytes, want %d", len(got), size)
 			}

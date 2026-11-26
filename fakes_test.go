@@ -174,7 +174,7 @@ func (f *fakeInfra) Adopt(_ context.Context, st *cluster.State, bundle []*unstru
 	return []byte("apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1\nkind: FakeMachine\nmetadata:\n  name: demo-bootstrap\n  namespace: default\nspec:\n  providerID: fake://1\n"), nil
 }
 
-func (f *fakeInfra) Plan(_ context.Context, st *cluster.State) (*infrastructure.Plan, error) {
+func (f *fakeInfra) Plan(_ context.Context, _ *cluster.State) (*infrastructure.Plan, error) {
 	f.rec.add("infra.Plan")
 	n := 1
 	if f.planSeq != nil {
@@ -234,7 +234,7 @@ contexts:
 current-context: demo
 `
 
-func (f *fakeCP) Prepare(_ context.Context, spec *cluster.Spec, ep cluster.Endpoint) (*controlplane.Credentials, error) {
+func (f *fakeCP) Prepare(_ context.Context, _ *cluster.Spec, ep cluster.Endpoint) (*controlplane.Credentials, error) {
 	f.rec.add("cp.Prepare %s:%d", ep.Host, ep.Port)
 	return &controlplane.Credentials{
 		CA:         cluster.KeyPair{Cert: []byte("CA-CERT"), Key: []byte("CA-KEY")},

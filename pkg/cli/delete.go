@@ -82,14 +82,14 @@ func newDeleteCommand() *cli.Command {
 			}
 			err = klotho.Delete(ctx, deps, name, opts)
 			if errors.Is(err, klotho.ErrDeclined) {
-				fmt.Fprintln(stderr(c), "aborted")
+				_, _ = fmt.Fprintln(stderr(c), "aborted")
 				return nil
 			}
 			if err != nil {
 				return err
 			}
 			_ = os.Remove(filepath.Join(a.cfg.CredentialsDir(), name+".json"))
-			fmt.Fprintf(stdout(c), "deleted %s\n", name)
+			_, _ = fmt.Fprintf(stdout(c), "deleted %s\n", name)
 			return nil
 		},
 	}
@@ -98,18 +98,18 @@ func newDeleteCommand() *cli.Command {
 // confirm shows the plan and reads a yes/no answer.
 func confirm(c *cli.Command, name string, p *infrastructure.Plan) bool {
 	w := stderr(c)
-	fmt.Fprintf(w, "Deleting cluster %s removes:\n", name)
+	_, _ = fmt.Fprintf(w, "Deleting cluster %s removes:\n", name)
 	if len(p.Resources) == 0 {
-		fmt.Fprintln(w, "  (no infrastructure found; only the state record)")
+		_, _ = fmt.Fprintln(w, "  (no infrastructure found; only the state record)")
 	}
 	for _, r := range p.Resources {
 		line := "  " + r.Kind + " " + r.ID
 		if r.Name != "" {
 			line += " (" + r.Name + ")"
 		}
-		fmt.Fprintln(w, line)
+		_, _ = fmt.Fprintln(w, line)
 	}
-	fmt.Fprint(w, "Proceed? [y/N] ")
+	_, _ = fmt.Fprint(w, "Proceed? [y/N] ")
 	answer, _ := bufio.NewReader(stdin(c)).ReadString('\n')
 	answer = strings.ToLower(strings.TrimSpace(answer))
 	return answer == "y" || answer == "yes"

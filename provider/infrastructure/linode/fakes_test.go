@@ -8,7 +8,7 @@ import (
 	"github.com/linode/linodego/v2"
 )
 
-// fakeLinode is an in-memory LinodeAPI for tests. It records the calls that
+// fakeLinode is an in-memory API for tests. It records the calls that
 // matter and serves instances so Launch/Plan/Teardown/Adopt can be exercised
 // without Linode.
 type fakeLinode struct {

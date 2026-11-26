@@ -106,7 +106,7 @@ func runList(ctx context.Context, c *cli.Command) error {
 	if c.Bool("nodes") {
 		header += "\tNODES\tREADY"
 	}
-	fmt.Fprintln(tw, header)
+	_, _ = fmt.Fprintln(tw, header)
 	now := time.Now()
 	for _, r := range rows {
 		endpoint, ageStr := "-", "-"
@@ -130,7 +130,7 @@ func runList(ctx context.Context, c *cli.Command) error {
 				line += fmt.Sprintf("\t%d\t%d", r.Nodes.Total, r.Nodes.Ready)
 			}
 		}
-		fmt.Fprintln(tw, line)
+		_, _ = fmt.Fprintln(tw, line)
 	}
 	return tw.Flush()
 }

@@ -35,7 +35,7 @@ func newInitCommand() *cli.Command {
 				return err
 			}
 			if cfg.Encryption.Plain {
-				fmt.Fprintln(stderr(c), "warning: encryption.plain is set; state will be stored unencrypted")
+				_, _ = fmt.Fprintln(stderr(c), "warning: encryption.plain is set; state will be stored unencrypted")
 			}
 			key, err := config.Init(cfg.Encryption.IdentityFile)
 			if err != nil {
@@ -46,11 +46,11 @@ func newInitCommand() *cli.Command {
 			if wrote {
 				state = "new"
 			}
-			fmt.Fprintf(w, "config:     %s (%s)\n", filepath.Clean(path), state)
-			fmt.Fprintf(w, "identity:   %s\n", cfg.Encryption.IdentityFile)
-			fmt.Fprintf(w, "state dir:  %s\n", cfg.StateDir)
-			fmt.Fprintf(w, "backend:    %s\n", cfg.EffectiveBackend())
-			fmt.Fprintf(w, "public key: %s\n", key)
+			_, _ = fmt.Fprintf(w, "config:     %s (%s)\n", filepath.Clean(path), state)
+			_, _ = fmt.Fprintf(w, "identity:   %s\n", cfg.Encryption.IdentityFile)
+			_, _ = fmt.Fprintf(w, "state dir:  %s\n", cfg.StateDir)
+			_, _ = fmt.Fprintf(w, "backend:    %s\n", cfg.EffectiveBackend())
+			_, _ = fmt.Fprintf(w, "public key: %s\n", key)
 			return nil
 		},
 	}

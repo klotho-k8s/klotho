@@ -469,7 +469,7 @@ func TestShellPrint(t *testing.T) {
 }
 
 // TestHelperProcess is the command the shell tests run.
-func TestHelperProcess(t *testing.T) {
+func TestHelperProcess(_ *testing.T) {
 	if os.Getenv("KLOTHO_TEST_HELPER") != "1" {
 		return
 	}

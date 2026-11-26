@@ -18,13 +18,17 @@ var (
 )
 
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
 	info := cli.BuildInfo{Version: version, Commit: commit, Date: date}
 	if err := cli.Run(ctx, os.Args, info); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		stop()
-		os.Exit(1)
+		_, _ = fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
 	}
+	return 0
 }
