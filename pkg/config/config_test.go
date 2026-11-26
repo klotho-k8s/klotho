@@ -170,9 +170,62 @@ func TestLoadErrors(t *testing.T) {
 	if _, err := Load("", ""); err == nil {
 		t.Error("bad recipient accepted")
 	}
-	writeConfig(t, "backend: s3\n")
+	writeConfig(t, "backend: bogus\n")
 	if _, err := Load("", ""); err == nil {
 		t.Error("unknown backend accepted")
+	}
+}
+
+func TestS3Backend(t *testing.T) {
+	isolate(t)
+
+	writeConfig(t, `
+backend: s3
+s3:
+  endpoint: http://minio:9000
+  region: eu-west-1
+  bucket: klotho-state
+  prefix: clusters
+  usePathStyle: true
+`)
+	t.Setenv(EnvS3AccessKeyID, "AKIA")
+	t.Setenv(EnvS3SecretKey, "s3cret")
+	c, err := Load("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.EffectiveBackend() != BackendS3 {
+		t.Errorf("backend = %s", c.EffectiveBackend())
+	}
+	s := c.S3Backend
+	if s.Endpoint != "http://minio:9000" || s.Region != "eu-west-1" || s.Bucket != "klotho-state" || s.Prefix != "clusters" || !s.UsePathStyle {
+		t.Errorf("s3 = %+v", s)
+	}
+	if s.AccessKeyID != "AKIA" || s.SecretAccessKey != "s3cret" {
+		t.Errorf("keys not taken from the environment: %+v", s)
+	}
+
+	// The keys never come from the file.
+	writeConfig(t, "backend: s3\ns3:\n  bucket: b\n  accessKeyId: AKIA\n")
+	if _, err := Load("", ""); err == nil {
+		t.Error("access key in the file accepted")
+	}
+
+	for name, body := range map[string]string{
+		"missing bucket": "backend: s3\n",
+		"bad endpoint":   "backend: s3\ns3:\n  bucket: b\n  endpoint: minio:9000\n",
+	} {
+		writeConfig(t, body)
+		if _, err := Load("", ""); err == nil || !strings.Contains(err.Error(), "s3") {
+			t.Errorf("%s: err = %v", name, err)
+		}
+	}
+
+	// Half a key pair is an error that names the other variable.
+	writeConfig(t, "backend: s3\ns3:\n  bucket: b\n")
+	t.Setenv(EnvS3SecretKey, "")
+	if _, err := Load("", ""); err == nil || !strings.Contains(err.Error(), EnvS3SecretKey) {
+		t.Errorf("half a key pair: %v", err)
 	}
 }
 

@@ -9,6 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.21.4
 	github.com/aws/aws-sdk-go-v2/service/ec2 v1.350.1
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.116.1
+	github.com/aws/smithy-go v1.28.10
 	github.com/blang/semver/v4 v4.0.0
 	github.com/kdomanski/iso9660 v0.4.0
 	github.com/linode/linodego/v2 v2.6.0
@@ -41,7 +42,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sso v1.39.6 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.44.6 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.53.1 // indirect
-	github.com/aws/smithy-go v1.28.10 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/buger/goterm v1.0.4 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect

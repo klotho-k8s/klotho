@@ -18,6 +18,7 @@ import (
 	"github.com/klotho-k8s/klotho/provider/backend"
 	filebackend "github.com/klotho-k8s/klotho/provider/backend/file"
 	proxmoxbackend "github.com/klotho-k8s/klotho/provider/backend/proxmox"
+	s3backend "github.com/klotho-k8s/klotho/provider/backend/s3"
 	"github.com/klotho-k8s/klotho/provider/controlplane"
 	"github.com/klotho-k8s/klotho/provider/controlplane/kubeadm"
 	"github.com/klotho-k8s/klotho/provider/infrastructure"
@@ -132,6 +133,21 @@ func newApp(c *cli.Command) (*app, error) {
 			return nil, fmt.Errorf("proxmox backend: %w", err)
 		}
 		a.store = proxmoxbackend.New(client, codec)
+	case config.BackendS3:
+		s := cfg.S3Backend
+		store, err := s3backend.New(context.Background(), s3backend.Config{
+			Endpoint:        s.Endpoint,
+			Region:          s.Region,
+			Bucket:          s.Bucket,
+			Prefix:          s.Prefix,
+			UsePathStyle:    s.UsePathStyle,
+			AccessKeyID:     s.AccessKeyID,
+			SecretAccessKey: s.SecretAccessKey,
+		}, codec)
+		if err != nil {
+			return nil, err
+		}
+		a.store = store
 	default:
 		return nil, fmt.Errorf("backend %q: %w", b, ErrNotImplemented)
 	}
