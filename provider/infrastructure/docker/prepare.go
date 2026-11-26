@@ -55,10 +55,23 @@ func (p *Provider) Prepare(ctx context.Context, spec *cluster.Spec) (*infrastruc
 		return nil, err
 	}
 
-	return &infrastructure.Prepared{
+	prepared := &infrastructure.Prepared{
 		Endpoint: cluster.Endpoint{Host: host, Port: DefaultPort},
 		Created:  created,
-	}, nil
+	}
+
+	// The load balancer's container-network address is the cluster's
+	// controlPlaneEndpoint, but on a rootless runtime the host cannot route to
+	// the container network. The load balancer also publishes its port to an
+	// ephemeral host port, which the host can reach; report it as the
+	// host-reachable client endpoint so klotho dials it for its own API calls.
+	if clientHost, clientPort, err := p.rt.PublishedPort(ctx, lb, DefaultPort); err != nil {
+		return nil, errorf("reading the load balancer's published host port: %v", err)
+	} else {
+		prepared.ClientEndpoint = cluster.Endpoint{Host: clientHost, Port: clientPort}
+	}
+
+	return prepared, nil
 }
 
 // containerIP returns a running container's address on its Docker network.

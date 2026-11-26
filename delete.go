@@ -49,8 +49,14 @@ func (deps Deps) connectAdmin(ctx context.Context, st *cluster.State) (kube.Clus
 	}
 	cfg := clientcmdapi.NewConfig()
 	name := st.Spec.Name
+	// Dial the host-reachable client endpoint when the provider reported one
+	// (CAPD on rootless podman), else the cluster endpoint.
+	dialEP := st.Endpoint
+	if st.ClientEndpoint.Host != "" {
+		dialEP = st.ClientEndpoint
+	}
 	cfg.Clusters[name] = &clientcmdapi.Cluster{
-		Server:                   credential.ServerURL(st.Endpoint),
+		Server:                   credential.ServerURL(dialEP),
 		CertificateAuthorityData: st.CA.Cert,
 	}
 	user := "klotho-admin@" + name

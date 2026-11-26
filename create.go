@@ -199,6 +199,11 @@ func Create(ctx context.Context, deps Deps, req CreateRequest) (_ *cluster.State
 	}
 	g.prepared(prepared)
 	log.Info("endpoint", "host", prepared.Endpoint.Host, "port", prepared.Endpoint.Port)
+	clientEP := prepared.Endpoint
+	if prepared.ClientEndpoint.Host != "" {
+		clientEP = prepared.ClientEndpoint
+		log.Info("client endpoint (host-reachable)", "host", clientEP.Host, "port", clientEP.Port)
+	}
 
 	tag := tagFor(deps.Infra, name)
 	bundle, err := buildBundle(ctx, deps, req, spec, userVars, prepared, tag)
@@ -224,11 +229,12 @@ func Create(ctx context.Context, deps Deps, req CreateRequest) (_ *cluster.State
 		return nil, fmt.Errorf("preparing control plane: %w", err)
 	}
 	st := &cluster.State{
-		Spec:      spec,
-		Endpoint:  prepared.Endpoint,
-		CA:        creds.CA,
-		CreatedAt: g.snapshot.CreatedAt,
-		Resources: append([]cluster.Resource(nil), prepared.Created...),
+		Spec:           spec,
+		Endpoint:       prepared.Endpoint,
+		ClientEndpoint: prepared.ClientEndpoint,
+		CA:             creds.CA,
+		CreatedAt:      g.snapshot.CreatedAt,
+		Resources:      append([]cluster.Resource(nil), prepared.Created...),
 	}
 	g.snapshot = st
 
@@ -437,6 +443,7 @@ type guard struct {
 
 func (g *guard) prepared(p *infrastructure.Prepared) {
 	g.snapshot.Endpoint = p.Endpoint
+	g.snapshot.ClientEndpoint = p.ClientEndpoint
 	g.snapshot.Resources = append([]cluster.Resource(nil), p.Created...)
 	g.created = len(p.Created) > 0
 }

@@ -19,10 +19,51 @@ type Runtime interface {
 	List(ctx context.Context, selector map[string]string) ([]Container, error)
 	// Inspect returns one container by name, or ok=false when absent.
 	Inspect(ctx context.Context, name string) (c Container, ok bool, err error)
+	// PublishedPort returns the host address a container's published
+	// containerPort is reachable at: the host IP (normalized to 127.0.0.1 for a
+	// wildcard bind) and the ephemeral host port the runtime assigned. It is how
+	// the provider learns the load balancer's host-reachable endpoint, which
+	// differs from its container-network address on a rootless runtime.
+	PublishedPort(ctx context.Context, name string, containerPort int) (host string, port int, err error)
 	// Remove force-removes the named container; a missing container is not an
 	// error.
 	Remove(ctx context.Context, name string) error
+	// RunNetworkRemove removes a Docker network; a missing network, or one still
+	// in use, is not an error (the shared network simply stays).
+	RemoveNetwork(ctx context.Context, name string) error
+	// RunCleanup launches the detached, self-removing deletion cleanup container
+	// (see cleanup.go). It mounts the host runtime socket so the container can
+	// finish the teardown over the API after klotho exits, and returns its ID
+	// once it is running.
+	RunCleanup(ctx context.Context, opts CleanupOpts) (id string, err error)
 }
+
+// CleanupOpts describes the deletion cleanup container to launch.
+type CleanupOpts struct {
+	// Name is the cleanup container's name.
+	Name string
+	// Image is the container image, which must carry a Docker-API-compatible
+	// CLI (docker) and a POSIX shell.
+	Image string
+	// Cluster is the cluster whose containers the cleanup sweeps (by the
+	// ClusterLabelKey label).
+	Cluster string
+	// Network is the Docker network to remove once empty, or "" to remove none.
+	Network string
+	// Socket is the host runtime socket bind-mounted into the cleanup container
+	// at DockerSocketPath, so its docker CLI drives the host runtime.
+	Socket string
+	// Script is the sweep shell script the container runs.
+	Script string
+	// TimeoutSeconds bounds how long the sweep waits for Cluster API to delete
+	// what it can before it force-removes the remainder.
+	TimeoutSeconds int
+}
+
+// CleanupLabelKey marks the cleanup container so its own sweep (which filters by
+// ClusterLabelKey) never matches it; it is removed by the runtime on exit
+// (--rm), not by itself.
+const CleanupLabelKey = "klotho.x-k8s.io/cleanup"
 
 // RunOpts describes a container to create.
 type RunOpts struct {

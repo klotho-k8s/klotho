@@ -208,6 +208,27 @@ func ParseExecCredential(b []byte) (certPEM, keyPEM []byte, expiry time.Time, er
 	return []byte(ec.Status.ClientCertificateData), []byte(ec.Status.ClientKeyData), expiry, nil
 }
 
+// WithServer returns a copy of kubeconfig with every cluster's server URL set
+// to ep. It lets klotho reuse an admin kubeconfig (client certificate and CA
+// unchanged) while dialing a host-reachable endpoint different from the one it
+// was minted for, for clusters whose controlPlaneEndpoint the host cannot route
+// (see cluster.State.ClientEndpoint).
+func WithServer(kubeconfig []byte, ep cluster.Endpoint) ([]byte, error) {
+	cfg, err := clientcmd.Load(kubeconfig)
+	if err != nil {
+		return nil, fmt.Errorf("credential: parsing kubeconfig: %w", err)
+	}
+	server := ServerURL(ep)
+	for _, c := range cfg.Clusters {
+		c.Server = server
+	}
+	out, err := clientcmd.Write(*cfg)
+	if err != nil {
+		return nil, fmt.Errorf("credential: serializing kubeconfig: %w", err)
+	}
+	return out, nil
+}
+
 // ServerURL returns https://host:port for an endpoint (port 6443 when unset).
 func ServerURL(ep cluster.Endpoint) string {
 	port := ep.Port

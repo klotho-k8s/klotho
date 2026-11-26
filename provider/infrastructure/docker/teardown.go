@@ -38,17 +38,19 @@ func (p *Provider) Plan(ctx context.Context, state *cluster.State) (*infrastruct
 		add(cluster.Resource{Kind: ResourceKindContainer, ID: c.Name, Name: c.Name})
 	}
 	for _, r := range state.Resources {
-		if r.Kind == ResourceKindContainer {
+		if r.Kind == ResourceKindContainer || r.Kind == ResourceKindNetwork {
 			add(r)
 		}
 	}
 	return plan, nil
 }
 
-// Teardown removes the plan's containers. A container is removed only when it
-// still carries the cluster label, so a container recorded in state but since
-// renamed or reused is left alone. Network resources are ignored: the Docker
-// network is shared. Failures are collected and returned together.
+// Teardown removes the plan's containers and the cluster network. A container is
+// removed only when it still carries the cluster label, so a container recorded
+// in state but since renamed or reused is left alone. The network is removed
+// best-effort and only once nothing is attached, so a shared network another
+// cluster still uses stays in place. Failures are collected and returned
+// together; a network that cannot be removed is not a failure.
 func (p *Provider) Teardown(ctx context.Context, state *cluster.State, plan *infrastructure.Plan) error {
 	if state == nil || state.Spec.Name == "" {
 		return errorf("state has no cluster name")
@@ -58,8 +60,14 @@ func (p *Provider) Teardown(ctx context.Context, state *cluster.State, plan *inf
 	}
 	name := state.Spec.Name
 	var errs []error
+	var networks []string
 	for _, r := range plan.Resources {
-		if r.Kind != ResourceKindContainer {
+		switch r.Kind {
+		case ResourceKindNetwork:
+			networks = append(networks, r.ID)
+			continue
+		case ResourceKindContainer:
+		default:
 			continue
 		}
 		c, ok, err := p.rt.Inspect(ctx, r.ID)
@@ -76,6 +84,13 @@ func (p *Provider) Teardown(ctx context.Context, state *cluster.State, plan *inf
 		}
 		if err := p.rt.Remove(ctx, r.ID); err != nil {
 			errs = append(errs, fmt.Errorf("removing %s: %w", r.ID, err))
+		}
+	}
+	// Networks last, after their containers are gone, so the removal is not
+	// refused for active endpoints.
+	for _, net := range networks {
+		if err := p.rt.RemoveNetwork(ctx, net); err != nil {
+			errs = append(errs, fmt.Errorf("removing network %s: %w", net, err))
 		}
 	}
 	return errors.Join(errs...)

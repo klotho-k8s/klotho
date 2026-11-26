@@ -122,11 +122,12 @@ func (s *fakeStore) state(name string) *cluster.State {
 // --- infrastructure
 
 type fakeInfra struct {
-	rec      *recorder
-	created  []cluster.Resource
-	vars     map[string]string
-	fail     map[string]error
-	prepSpec *cluster.Spec
+	rec            *recorder
+	created        []cluster.Resource
+	vars           map[string]string
+	fail           map[string]error
+	prepSpec       *cluster.Spec
+	clientEndpoint cluster.Endpoint
 	// planSeq, when non-nil, is the number of resources successive Plan calls
 	// report; after it is exhausted Plan reports none. Nil keeps the default
 	// of one resource, so a watched delete can drain to empty.
@@ -147,9 +148,10 @@ func (f *fakeInfra) Prepare(_ context.Context, spec *cluster.Spec) (*infrastruct
 		return nil, err
 	}
 	return &infrastructure.Prepared{
-		Endpoint:  cluster.Endpoint{Host: "10.0.0.10", Port: 6443},
-		Created:   f.created,
-		Variables: f.vars,
+		Endpoint:       cluster.Endpoint{Host: "10.0.0.10", Port: 6443},
+		ClientEndpoint: f.clientEndpoint,
+		Created:        f.created,
+		Variables:      f.vars,
 	}, nil
 }
 
@@ -217,11 +219,26 @@ func (f *fakeCP) Check(bundle []*unstructured.Unstructured) []provider.Finding {
 func (f *fakeCP) Name() string { return "kubeadm" }
 func (f *fakeCP) Kind() string { return "KubeadmControlPlane" }
 
+// fakeKubeconfig is a minimal but valid kubeconfig, so credential.WithServer
+// can parse and rewrite it when a ClientEndpoint is set.
+const fakeKubeconfig = `apiVersion: v1
+kind: Config
+clusters:
+- name: demo
+  cluster:
+    server: https://10.0.0.10:6443
+contexts:
+- name: demo
+  context:
+    cluster: demo
+current-context: demo
+`
+
 func (f *fakeCP) Prepare(_ context.Context, spec *cluster.Spec, ep cluster.Endpoint) (*controlplane.Credentials, error) {
 	f.rec.add("cp.Prepare %s:%d", ep.Host, ep.Port)
 	return &controlplane.Credentials{
 		CA:         cluster.KeyPair{Cert: []byte("CA-CERT"), Key: []byte("CA-KEY")},
-		Kubeconfig: []byte("admin-kubeconfig"),
+		Kubeconfig: []byte(fakeKubeconfig),
 	}, nil
 }
 

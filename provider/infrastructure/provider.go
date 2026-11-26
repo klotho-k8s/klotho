@@ -26,6 +26,16 @@ type Item struct {
 // Prepared is the result of Prepare.
 type Prepared struct {
 	Endpoint cluster.Endpoint
+	// ClientEndpoint, when set, is a host-reachable address klotho dials for
+	// its own API calls (converge and delete) instead of Endpoint. It exists
+	// for environments where the cluster's controlPlaneEndpoint is not routable
+	// from the host running klotho: the CAPD/Docker provider on rootless podman,
+	// where the load balancer's container-network address is the cluster
+	// endpoint but only its published host port (127.0.0.1:<port>) answers from
+	// the host. Endpoint remains the cluster's controlPlaneEndpoint, baked into
+	// the node configuration and the serving certificates; ClientEndpoint only
+	// redirects klotho's own client. Zero means klotho dials Endpoint.
+	ClientEndpoint cluster.Endpoint
 	// Created lists resources Prepare allocated. Empty means Prepare only
 	// validated, so a failed run has nothing to clean up yet.
 	Created []cluster.Resource

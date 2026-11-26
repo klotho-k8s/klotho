@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/klotho-k8s/klotho/pkg/cluster"
+	"github.com/klotho-k8s/klotho/pkg/credential"
 	"github.com/klotho-k8s/klotho/pkg/generate"
 	"github.com/klotho-k8s/klotho/pkg/kube"
 	"github.com/klotho-k8s/klotho/provider/controlplane"
@@ -54,7 +55,20 @@ func converge(ctx context.Context, deps Deps, req CreateRequest, st *cluster.Sta
 	if connect == nil {
 		connect = kube.New
 	}
-	cl, err := connect(ctx, creds.Kubeconfig)
+	// The admin kubeconfig Prepare minted dials the cluster's controlPlaneEndpoint,
+	// which the host may not route (CAPD on rootless podman). When the provider
+	// reported a host-reachable ClientEndpoint, dial that instead; only the
+	// server URL changes, the client certificate and CA stay as minted, and the
+	// endpoint is covered by the API server's serving certificate SANs.
+	kubeconfig := creds.Kubeconfig
+	if st.ClientEndpoint.Host != "" {
+		rewritten, err := credential.WithServer(creds.Kubeconfig, st.ClientEndpoint)
+		if err != nil {
+			return err
+		}
+		kubeconfig = rewritten
+	}
+	cl, err := connect(ctx, kubeconfig)
 	if err != nil {
 		return err
 	}
