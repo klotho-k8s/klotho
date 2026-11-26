@@ -1,0 +1,9 @@
+bin/
+cover.out
+.envrc
+.idea/
+.vscode/
+*.kubeconfig
+.claude/worktrees/
+NUL
+dist/

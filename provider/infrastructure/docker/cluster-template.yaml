@@ -1,0 +1,165 @@
+# klotho flat Cluster API Docker (CAPD) cluster template.
+#
+# It is authored in the Cluster API v1beta2 contract (object references use
+# apiGroup, not apiVersion), which is what klotho's generator requires. CAPD's
+# own published template is "cluster-template-development.yaml", a managed
+# ClusterClass/topology (quick-start) manifest whose infrastructure objects do
+# not appear in the bundle, so klotho's adopt/pivot model cannot use it. This
+# template is instead FLAT: every object - Cluster, DockerCluster,
+# KubeadmControlPlane, DockerMachineTemplate(s), MachineDeployment and the
+# worker KubeadmConfigTemplate - is present, so Adopt can read the control
+# plane's infrastructure MachineTemplate from the bundle and
+# SetControlPlaneEndpoint can patch the DockerCluster.
+#
+# CAPD is for local development and testing only, never production.
+#
+# klotho fills CLUSTER_NAME, NAMESPACE, KUBERNETES_VERSION,
+# CONTROL_PLANE_MACHINE_COUNT and WORKER_MACHINE_COUNT itself. The control
+# plane endpoint is supplied by klotho's Prepare (the "<cluster>-lb" haproxy
+# container it creates and CAPD adopts), patched onto the DockerCluster's
+# spec.controlPlaneEndpoint - nothing else needs to be supplied.
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: "${CLUSTER_NAME}"
+  namespace: "${NAMESPACE}"
+spec:
+  clusterNetwork:
+    services:
+      cidrBlocks: ${SERVICE_CIDR:=["10.128.0.0/12"]}
+    pods:
+      cidrBlocks: ${POD_CIDR:=["192.168.0.0/16"]}
+    serviceDomain: ${SERVICE_DOMAIN:="cluster.local"}
+  controlPlaneRef:
+    apiGroup: controlplane.cluster.x-k8s.io
+    kind: KubeadmControlPlane
+    name: "${CLUSTER_NAME}-control-plane"
+  infrastructureRef:
+    apiGroup: infrastructure.cluster.x-k8s.io
+    kind: DockerCluster
+    name: "${CLUSTER_NAME}"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: DockerCluster
+metadata:
+  name: "${CLUSTER_NAME}"
+  namespace: "${NAMESPACE}"
+spec: {}
+---
+apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+kind: KubeadmControlPlane
+metadata:
+  name: "${CLUSTER_NAME}-control-plane"
+  namespace: "${NAMESPACE}"
+spec:
+  replicas: ${CONTROL_PLANE_MACHINE_COUNT}
+  version: "${KUBERNETES_VERSION}"
+  machineTemplate:
+    spec:
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: DockerMachineTemplate
+        name: "${CLUSTER_NAME}-control-plane"
+  kubeadmConfigSpec:
+    clusterConfiguration:
+      apiServer:
+        # The API server is reached through the haproxy load balancer and the
+        # node's container address, so its serving certificate must cover them.
+        certSANs:
+        - localhost
+        - 127.0.0.1
+        - 0.0.0.0
+        - host.docker.internal
+      controllerManager:
+        extraArgs:
+        - name: enable-hostpath-provisioner
+          value: "true"
+    initConfiguration:
+      nodeRegistration:
+        # kindest/node runs containerd at this socket.
+        criSocket: unix:///var/run/containerd/containerd.sock
+        # eviction-hard: the node shares the host filesystem, so disk-pressure
+        # eviction would misfire. fail-swap-on=false: the kubelet refuses to
+        # start when the host has swap enabled, which a podman machine does by
+        # default. feature-gates KubeletInUserNamespace=true: lets the kubelet
+        # run inside a rootless (user-namespaced) container, where writing host
+        # sysctls like vm/overcommit_memory is denied. kind sets all three for
+        # its nodes.
+        kubeletExtraArgs:
+        - name: eviction-hard
+          value: "nodefs.available<0%,nodefs.inodesFree<0%,imagefs.available<0%"
+        - name: fail-swap-on
+          value: "false"
+        - name: feature-gates
+          value: "KubeletInUserNamespace=true"
+    joinConfiguration:
+      nodeRegistration:
+        criSocket: unix:///var/run/containerd/containerd.sock
+        kubeletExtraArgs:
+        - name: eviction-hard
+          value: "nodefs.available<0%,nodefs.inodesFree<0%,imagefs.available<0%"
+        - name: fail-swap-on
+          value: "false"
+        - name: feature-gates
+          value: "KubeletInUserNamespace=true"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: DockerMachineTemplate
+metadata:
+  name: "${CLUSTER_NAME}-control-plane"
+  namespace: "${NAMESPACE}"
+spec:
+  template:
+    spec: {}
+---
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: MachineDeployment
+metadata:
+  name: "${CLUSTER_NAME}-md-0"
+  namespace: "${NAMESPACE}"
+spec:
+  clusterName: "${CLUSTER_NAME}"
+  replicas: ${WORKER_MACHINE_COUNT}
+  selector:
+    matchLabels: null
+  template:
+    spec:
+      clusterName: "${CLUSTER_NAME}"
+      version: "${KUBERNETES_VERSION}"
+      bootstrap:
+        configRef:
+          apiGroup: bootstrap.cluster.x-k8s.io
+          kind: KubeadmConfigTemplate
+          name: "${CLUSTER_NAME}-md-0"
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: DockerMachineTemplate
+        name: "${CLUSTER_NAME}-md-0"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: DockerMachineTemplate
+metadata:
+  name: "${CLUSTER_NAME}-md-0"
+  namespace: "${NAMESPACE}"
+spec:
+  template:
+    spec: {}
+---
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+kind: KubeadmConfigTemplate
+metadata:
+  name: "${CLUSTER_NAME}-md-0"
+  namespace: "${NAMESPACE}"
+spec:
+  template:
+    spec:
+      joinConfiguration:
+        nodeRegistration:
+          criSocket: unix:///var/run/containerd/containerd.sock
+          kubeletExtraArgs:
+          - name: eviction-hard
+            value: "nodefs.available<0%,nodefs.inodesFree<0%,imagefs.available<0%"
+          - name: fail-swap-on
+            value: "false"
+          - name: feature-gates
+            value: "KubeletInUserNamespace=true"

@@ -1,0 +1,4 @@
+# Keep shell scripts LF so they run on Linux regardless of checkout settings.
+# sidecar_script.sh is embedded verbatim and executed by BusyBox sh inside a
+# container, which rejects CRLF line endings.
+*.sh text eol=lf

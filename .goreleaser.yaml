@@ -1,0 +1,63 @@
+# goreleaser configuration. Try it locally without publishing:
+#   goreleaser release --snapshot --clean
+version: 2
+
+project_name: klotho
+
+# The environment carries tokens for several forges; releases go to GitHub.
+force_token: github
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: klotho
+    main: ./cmd/klotho
+    binary: klotho
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }} -X main.commit={{ .ShortCommit }} -X main.date={{ .Date }}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - LICENSE*
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  github:
+    owner: klotho-k8s
+    name: klotho
+  draft: true
+  prerelease: auto
