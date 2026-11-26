@@ -78,6 +78,7 @@ const (
 const (
 	BackendFile    = "file"
 	BackendProxmox = "proxmox"
+	BackendS3      = "s3"
 )
 
 // Payload host kinds.
@@ -91,15 +92,18 @@ const DefaultPresignTTL = time.Hour
 
 // Config is the merged configuration.
 type Config struct {
-	// Backend is "proxmox" or "file". Empty means the infrastructure
+	// Backend is "proxmox", "file" or "s3". Empty means the infrastructure
 	// provider's native store when it has one and is configured, else file;
-	// see EffectiveBackend.
+	// see EffectiveBackend. "s3" is never inferred and must be set explicitly.
 	Backend string `json:"backend,omitempty"`
 	// Payload configures the host that serves files too large for a
 	// provider's user-data channel. Unset means none.
 	Payload Payload `json:"payload,omitempty"`
 	// StateDir holds the file backend's records and the credential cache.
 	StateDir string `json:"stateDir,omitempty"`
+	// S3Backend configures the s3 state backend. It is used only when the
+	// effective backend is "s3".
+	S3Backend S3Backend `json:"s3,omitempty"`
 	// SSHAuthorizedKeys are installed for the bootstrap node's default user.
 	SSHAuthorizedKeys []string   `json:"sshAuthorizedKeys,omitempty"`
 	Encryption        Encryption `json:"encryption,omitempty"`
@@ -359,6 +363,48 @@ func (s S3) TTL() time.Duration {
 	return d
 }
 
+// S3Backend configures the s3 state backend: AWS S3 or anything speaking its
+// API, such as MinIO, Ceph RGW or Cloudflare R2. The backend stores each
+// cluster's already-sealed state record as one object; it never holds a
+// plaintext state or a usable credential.
+type S3Backend struct {
+	// Endpoint is the store's URL; empty means AWS S3.
+	Endpoint string `json:"endpoint,omitempty"`
+	// Region is the signing region; empty means us-east-1, which most
+	// non-AWS stores accept.
+	Region string `json:"region,omitempty"`
+	// Bucket must exist; klotho does not create it. Required when backend is s3.
+	Bucket string `json:"bucket,omitempty"`
+	// Prefix is a key prefix below which every record is stored.
+	Prefix string `json:"prefix,omitempty"`
+	// UsePathStyle puts the bucket in the URL path rather than the host name;
+	// MinIO needs it.
+	UsePathStyle bool `json:"usePathStyle,omitempty"`
+	// AccessKeyID and SecretAccessKey come only from the environment
+	// (EnvS3AccessKeyID, EnvS3SecretKey). Unset, the standard AWS credential
+	// chain (environment, shared config, instance role) applies.
+	AccessKeyID     string `json:"-"`
+	SecretAccessKey string `json:"-"`
+}
+
+// problems lists what is wrong with an S3 backend section.
+func (s S3Backend) problems() []string {
+	var problems []string
+	if s.Bucket == "" {
+		problems = append(problems, "s3.bucket is required when backend is s3")
+	}
+	if s.Endpoint != "" {
+		u, err := url.Parse(s.Endpoint)
+		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+			problems = append(problems, fmt.Sprintf("s3.endpoint %q must be an http(s) URL", s.Endpoint))
+		}
+	}
+	if (s.AccessKeyID == "") != (s.SecretAccessKey == "") {
+		problems = append(problems, fmt.Sprintf("%s and %s must be set together", EnvS3AccessKeyID, EnvS3SecretKey))
+	}
+	return problems
+}
+
 // CAPI configures the Cluster API core, bootstrap and control plane
 // providers the operator installs, and the bootstrap node's add-ons.
 type CAPI struct {
@@ -582,9 +628,11 @@ func (c *Config) applyEnv() error {
 	}
 	if v, ok := os.LookupEnv(EnvS3AccessKeyID); ok && v != "" {
 		c.Payload.S3.AccessKeyID = v
+		c.S3Backend.AccessKeyID = v
 	}
 	if v, ok := os.LookupEnv(EnvS3SecretKey); ok && v != "" {
 		c.Payload.S3.SecretAccessKey = v
+		c.S3Backend.SecretAccessKey = v
 	}
 	return nil
 }
@@ -628,8 +676,10 @@ func (c *Config) Validate() error {
 	var problems []string
 	switch c.Backend {
 	case "", BackendFile, BackendProxmox:
+	case BackendS3:
+		problems = append(problems, c.S3Backend.problems()...)
 	default:
-		problems = append(problems, fmt.Sprintf("backend %q is not one of %s, %s", c.Backend, BackendProxmox, BackendFile))
+		problems = append(problems, fmt.Sprintf("backend %q is not one of %s, %s, %s", c.Backend, BackendProxmox, BackendFile, BackendS3))
 	}
 	switch c.Payload.Kind {
 	case "":
@@ -838,8 +888,16 @@ func Init(identityFile string) (publicKey string, err error) {
 // Skeleton is the commented configuration file "klotho init" writes when
 // none exists.
 const Skeleton = `# klotho configuration. Every field is optional; see "klotho --help".
-# backend: proxmox            # or file; default: proxmox when proxmox.url is set
+# backend: proxmox            # or file, s3; default: proxmox when proxmox.url is set
 # stateDir: ~/.local/state/klotho
+# s3:                        # state backend; used only when backend: s3
+#   endpoint: http://minio.example:9000   # omit for AWS S3
+#   region: us-east-1
+#   bucket: klotho-state
+#   prefix: clusters
+#   usePathStyle: true       # needed by MinIO
+#   # keys: set KLOTHO_S3_ACCESS_KEY_ID and KLOTHO_S3_SECRET_ACCESS_KEY,
+#   # or leave both unset to use the AWS credential chain
 # encryption:
 #   identityFile: ~/.config/klotho/identity.txt
 #   recipients: []           # default: the identity file's public keys
