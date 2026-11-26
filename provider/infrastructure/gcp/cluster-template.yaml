@@ -1,0 +1,166 @@
+# klotho flat, cost-aware GCP (CAPG) cluster template.
+#
+# It is authored in the Cluster API v1beta2 contract for the core objects
+# (Cluster, KubeadmControlPlane, MachineDeployment, KubeadmConfigTemplate use
+# apiGroup references, which is what klotho's generator requires). The GCP
+# infrastructure objects are infrastructure.cluster.x-k8s.io/v1beta1, CAPG's
+# storage version.
+#
+# It is deliberately cheap to run:
+#   * preemptible (Spot) machines - far cheaper, reclaimable; test/throwaway
+#     only.
+#   * e2-medium control plane - the smallest sane type that still clears
+#     kubeadm's two-CPU preflight.
+#   * publicIP: true - an ephemeral external IP on every node, so a node reaches
+#     the internet (to pull images) with NO Cloud NAT gateway to pay for.
+#   * single zone (GCPCluster.spec.failureDomains = [GCP_ZONE]) - keeps every
+#     node, and so every providerID, in the zone klotho booted node zero in.
+#   * NO cloud controller manager and NO in-tree cloud provider. The kubelet is
+#     given its providerID directly (gce://<project>/<zone>/<hostname>), which is
+#     the only thing Cluster API needs from the cloud provider to bind each
+#     Machine to its Node. That removes the GCP CCM (and its standing cost and
+#     extra RBAC) from a throwaway cluster. Apply a CNI after the API server is
+#     up; the node stays NotReady until you do.
+#
+# UNAVOIDABLE cost: stock CAPG ALWAYS provisions a managed external load
+# balancer for the API server (a global forwarding rule, backend service, health
+# check and a global static IP), billed ~$20-30/mo even idle, and it cannot be
+# disabled upstream. klotho reserves that load balancer's IP up front (named
+# "<cluster>-apiserver", which CAPG's createOrGetAddress adopts) so the endpoint
+# is stable and known before the certificates are minted, but the load balancer
+# itself is a standing charge. Delete the cluster when you are done.
+#
+# klotho fills CLUSTER_NAME, NAMESPACE, KUBERNETES_VERSION,
+# CONTROL_PLANE_MACHINE_COUNT and WORKER_MACHINE_COUNT itself, and the GCP
+# provider's Prepare fills GCP_PROJECT, GCP_REGION, GCP_ZONE, GCP_NETWORK_NAME,
+# GCP_SUBNET_NAME, GCP_CONTROL_PLANE_MACHINE_TYPE, GCP_NODE_MACHINE_TYPE and
+# GCP_IMAGE. Nothing else needs to be supplied.
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: "${CLUSTER_NAME}"
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks:
+      - 192.168.0.0/16
+  controlPlaneRef:
+    apiGroup: controlplane.cluster.x-k8s.io
+    kind: KubeadmControlPlane
+    name: "${CLUSTER_NAME}-control-plane"
+  infrastructureRef:
+    apiGroup: infrastructure.cluster.x-k8s.io
+    kind: GCPCluster
+    name: "${CLUSTER_NAME}"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: GCPCluster
+metadata:
+  name: "${CLUSTER_NAME}"
+spec:
+  project: "${GCP_PROJECT}"
+  region: "${GCP_REGION}"
+  # Pin every machine to one zone, so each node's providerID
+  # (gce://<project>/<zone>/<name>) uses GCP_ZONE - the zone klotho booted node
+  # zero in and the zone CAPG looks the adopted instance up in.
+  failureDomains:
+  - "${GCP_ZONE}"
+  # Bring your own network: an existing VPC (the project's auto-mode "default"
+  # by default), no new subnets or routers created.
+  network:
+    name: "${GCP_NETWORK_NAME}"
+---
+apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+kind: KubeadmControlPlane
+metadata:
+  name: "${CLUSTER_NAME}-control-plane"
+spec:
+  replicas: ${CONTROL_PLANE_MACHINE_COUNT}
+  version: "${KUBERNETES_VERSION}"
+  machineTemplate:
+    spec:
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: GCPMachineTemplate
+        name: "${CLUSTER_NAME}-control-plane"
+  kubeadmConfigSpec:
+    initConfiguration:
+      nodeRegistration:
+        name: '{{ ds.meta_data.local_hostname.split(".")[0] }}'
+        kubeletExtraArgs:
+        # Give the kubelet its GCE providerID directly, so Cluster API binds the
+        # Node to its GCPMachine with no cloud controller manager. The hostname
+        # GCE assigns equals the instance name, which equals the GCPMachine name.
+        - name: provider-id
+          value: 'gce://${GCP_PROJECT}/${GCP_ZONE}/{{ ds.meta_data.local_hostname.split(".")[0] }}'
+    joinConfiguration:
+      nodeRegistration:
+        name: '{{ ds.meta_data.local_hostname.split(".")[0] }}'
+        kubeletExtraArgs:
+        - name: provider-id
+          value: 'gce://${GCP_PROJECT}/${GCP_ZONE}/{{ ds.meta_data.local_hostname.split(".")[0] }}'
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: GCPMachineTemplate
+metadata:
+  name: "${CLUSTER_NAME}-control-plane"
+spec:
+  template:
+    spec:
+      instanceType: "${GCP_CONTROL_PLANE_MACHINE_TYPE}"
+      image: "${GCP_IMAGE}"
+      subnet: "${GCP_SUBNET_NAME}"
+      publicIP: true
+      preemptible: true
+      rootDeviceType: pd-balanced
+---
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: MachineDeployment
+metadata:
+  name: "${CLUSTER_NAME}-md-0"
+spec:
+  clusterName: "${CLUSTER_NAME}"
+  replicas: ${WORKER_MACHINE_COUNT}
+  selector:
+    matchLabels: null
+  template:
+    spec:
+      clusterName: "${CLUSTER_NAME}"
+      version: "${KUBERNETES_VERSION}"
+      bootstrap:
+        configRef:
+          apiGroup: bootstrap.cluster.x-k8s.io
+          kind: KubeadmConfigTemplate
+          name: "${CLUSTER_NAME}-md-0"
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: GCPMachineTemplate
+        name: "${CLUSTER_NAME}-md-0"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: GCPMachineTemplate
+metadata:
+  name: "${CLUSTER_NAME}-md-0"
+spec:
+  template:
+    spec:
+      instanceType: "${GCP_NODE_MACHINE_TYPE}"
+      image: "${GCP_IMAGE}"
+      subnet: "${GCP_SUBNET_NAME}"
+      publicIP: true
+      preemptible: true
+      rootDeviceType: pd-balanced
+---
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+kind: KubeadmConfigTemplate
+metadata:
+  name: "${CLUSTER_NAME}-md-0"
+spec:
+  template:
+    spec:
+      joinConfiguration:
+        nodeRegistration:
+          name: '{{ ds.meta_data.local_hostname.split(".")[0] }}'
+          kubeletExtraArgs:
+          - name: provider-id
+            value: 'gce://${GCP_PROJECT}/${GCP_ZONE}/{{ ds.meta_data.local_hostname.split(".")[0] }}'

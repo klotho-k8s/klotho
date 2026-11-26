@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"log/slog"
@@ -23,6 +24,7 @@ import (
 	"github.com/klotho-k8s/klotho/provider/infrastructure"
 	awsprovider "github.com/klotho-k8s/klotho/provider/infrastructure/aws"
 	dockerprovider "github.com/klotho-k8s/klotho/provider/infrastructure/docker"
+	gcpprovider "github.com/klotho-k8s/klotho/provider/infrastructure/gcp"
 	linodeprovider "github.com/klotho-k8s/klotho/provider/infrastructure/linode"
 	proxmoxprovider "github.com/klotho-k8s/klotho/provider/infrastructure/proxmox"
 	"github.com/klotho-k8s/klotho/provider/payload"
@@ -34,6 +36,7 @@ const (
 	providerProxmox = "proxmox"
 	providerAWS     = "aws"
 	providerLinode  = "linode"
+	providerGCP     = "gcp"
 	providerDocker  = "docker"
 	cpKubeadm       = "kubeadm"
 )
@@ -323,6 +326,46 @@ func (a *app) infra(provider string) (infrastructure.Provider, error) {
 			return nil, err
 		}
 		return linodeInfra{linodeprovider.New(client, lc)}, nil
+	case providerGCP:
+		g := a.cfg.GCP
+		if g.Project == "" {
+			return nil, fmt.Errorf("gcp provider: project is required (set gcp.project)")
+		}
+		credsJSON, err := a.gcpCredentials()
+		if err != nil {
+			return nil, err
+		}
+		publicIP := true
+		if g.PublicIP != nil {
+			publicIP = *g.PublicIP
+		}
+		gc := gcpprovider.Config{
+			Project:              g.Project,
+			Region:               g.Region,
+			Zone:                 g.Zone,
+			MachineType:          g.MachineType,
+			Image:                g.Image,
+			ImageProject:         g.ImageProject,
+			ImageFamily:          g.ImageFamily,
+			DiskSizeGB:           g.DiskSizeGB,
+			DiskType:             g.DiskType,
+			Network:              g.Network,
+			Subnet:               g.Subnet,
+			ServiceAccount:       g.ServiceAccount,
+			NetworkTags:          g.NetworkTags,
+			AuthorizedKeys:       g.AuthorizedKeys,
+			LoginUser:            g.LoginUser,
+			PublicIP:             publicIP,
+			Preemptible:          g.Preemptible,
+			ControlPlaneEndpoint: g.ControlPlaneEndpoint,
+			Port:                 g.Port,
+			CredentialsJSON:      credsJSON,
+		}
+		client, err := gcpprovider.NewClient(context.Background(), credsJSON)
+		if err != nil {
+			return nil, err
+		}
+		return gcpInfra{gcpprovider.New(client, gc)}, nil
 	case providerDocker:
 		d := a.cfg.Docker
 		return dockerInfra{dockerprovider.New(nil, dockerprovider.Config{
@@ -334,8 +377,21 @@ func (a *app) infra(provider string) (infrastructure.Provider, error) {
 			CleanupImage: d.CleanupImage,
 		})}, nil
 	default:
-		return nil, fmt.Errorf("infrastructure provider %q: %w (available: %s, %s, %s, %s)", provider, ErrNotImplemented, providerProxmox, providerDocker, providerAWS, providerLinode)
+		return nil, fmt.Errorf("infrastructure provider %q: %w (available: %s, %s, %s, %s, %s)", provider, ErrNotImplemented, providerProxmox, providerDocker, providerAWS, providerLinode, providerGCP)
 	}
+}
+
+// gcpCredentials reads the configured service-account key JSON, or returns nil
+// (Application Default Credentials) when no file is configured.
+func (a *app) gcpCredentials() ([]byte, error) {
+	if a.cfg.GCP.CredentialsFile == "" {
+		return nil, nil
+	}
+	b, err := os.ReadFile(a.cfg.GCP.CredentialsFile)
+	if err != nil {
+		return nil, fmt.Errorf("gcp.credentialsFile: %w", err)
+	}
+	return b, nil
 }
 
 // providerSecretData is what the infrastructure provider's controller needs
@@ -361,6 +417,12 @@ func (a *app) providerSecretData(provider string) map[string]string {
 		if t := a.cfg.Linode.Token; t != "" {
 			return map[string]string{"LINODE_TOKEN": t}
 		}
+	case providerGCP:
+		if f := a.cfg.GCP.CredentialsFile; f != "" {
+			if b, err := os.ReadFile(f); err == nil && len(b) > 0 {
+				return map[string]string{"GCP_B64ENCODED_CREDENTIALS": base64.StdEncoding.EncodeToString(b)}
+			}
+		}
 	}
 	return nil
 }
@@ -380,6 +442,11 @@ type linodeInfra struct{ *linodeprovider.Provider }
 
 func (linodeInfra) Tag(cluster string) string { return linodeprovider.Tag(cluster) }
 
+// gcpInfra adds the provider's label convention to the GCP provider.
+type gcpInfra struct{ *gcpprovider.Provider }
+
+func (gcpInfra) Tag(cluster string) string { return gcpprovider.Tag(cluster) }
+
 // dockerInfra adds the provider's cluster-label convention to the Docker
 // provider.
 type dockerInfra struct{ *dockerprovider.Provider }
@@ -397,11 +464,13 @@ var (
 	_ klotho.Tagger           = proxmoxInfra{}
 	_ klotho.Tagger           = awsInfra{}
 	_ klotho.Tagger           = linodeInfra{}
+	_ klotho.Tagger           = gcpInfra{}
 	_ klotho.BootstrapNamer   = kubeadmProvider{}
 	_ controlplane.Provider   = kubeadmProvider{}
 	_ infrastructure.Provider = proxmoxInfra{}
 	_ infrastructure.Provider = awsInfra{}
 	_ infrastructure.Provider = linodeInfra{}
+	_ infrastructure.Provider = gcpInfra{}
 )
 
 func firstNonEmpty(s ...string) string {
