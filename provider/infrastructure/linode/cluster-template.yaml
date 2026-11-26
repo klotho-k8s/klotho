@@ -1,0 +1,154 @@
+# klotho flat, cost-safe Linode (CAPL) cluster template.
+#
+# It is authored in the Cluster API v1beta2 contract (CAPI-core object
+# references use apiGroup, not apiVersion), which is what klotho's generator
+# requires. The Linode infrastructure objects are infrastructure.cluster.x-k8s.io/
+# v1alpha2 - CAPL's only API version - and klotho enforces the v1beta2 contract
+# only on the CAPI-core objects (Cluster, KubeadmControlPlane, MachineDeployment,
+# KubeadmConfigTemplate), which are all v1beta2 here.
+#
+# It is deliberately cheap to run:
+#   * network.loadBalancerType: external - CAPL provisions NO NodeBalancer
+#     (a NodeBalancer bills ~$10/mo). klotho supplies the control plane endpoint
+#     (LINODE's controlPlaneEndpoint, a DNS name you point at node zero), which
+#     klotho patches onto the LinodeCluster; with the endpoint already set and
+#     the LB external, CAPL's cluster controller has "nothing to do".
+#   * No VPC, no Cloud Firewall, no managed add-ons - nothing billed hourly
+#     beyond the instances themselves.
+#   * A single control plane on the smallest instance type that clears kubeadm's
+#     two-CPU preflight (g6-standard-2 by default).
+#   * The machine templates set no osDisk/dataDisks, so when CAPL adopts node
+#     zero its disk-configure preflight is a no-op and the running node is left
+#     untouched.
+#
+# klotho fills CLUSTER_NAME, NAMESPACE, KUBERNETES_VERSION,
+# CONTROL_PLANE_MACHINE_COUNT and WORKER_MACHINE_COUNT itself, and the Linode
+# provider's Prepare fills LINODE_REGION, LINODE_CONTROL_PLANE_MACHINE_TYPE,
+# LINODE_MACHINE_TYPE and LINODE_OS. The control plane endpoint is patched onto
+# the LinodeCluster by klotho. Nothing else needs to be supplied.
+#
+# The base image (linode/ubuntu22.04) carries no Kubernetes, so create with
+# klotho's install-at-boot (nodes.installKubernetes / --install-kubernetes).
+# No CNI is shipped (like upstream CAPL's own templates); apply one after the
+# API server is up, e.g. kubectl apply -f <cilium/calico manifest>.
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: "${CLUSTER_NAME}"
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks:
+      - 10.244.0.0/16
+  controlPlaneRef:
+    apiGroup: controlplane.cluster.x-k8s.io
+    kind: KubeadmControlPlane
+    name: "${CLUSTER_NAME}-control-plane"
+  infrastructureRef:
+    apiGroup: infrastructure.cluster.x-k8s.io
+    kind: LinodeCluster
+    name: "${CLUSTER_NAME}"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
+kind: LinodeCluster
+metadata:
+  name: "${CLUSTER_NAME}"
+spec:
+  region: "${LINODE_REGION}"
+  # klotho patches spec.controlPlaneEndpoint (host/port) from the configured
+  # linode.controlPlaneEndpoint; with it set and the LB external, CAPL creates
+  # no NodeBalancer.
+  controlPlaneEndpoint:
+    host: "${CONTROL_PLANE_ENDPOINT_IP}"
+    port: ${CONTROL_PLANE_ENDPOINT_PORT:=6443}
+  network:
+    loadBalancerType: external
+---
+apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+kind: KubeadmControlPlane
+metadata:
+  name: "${CLUSTER_NAME}-control-plane"
+spec:
+  kubeadmConfigSpec:
+    initConfiguration:
+      localAPIEndpoint:
+        bindPort: ${CONTROL_PLANE_ENDPOINT_PORT:=6443}
+      nodeRegistration:
+        # The Linode instance's Metadata label is node zero's hostname (set by
+        # the preKubeadmCommand below); register the node under the same name.
+        name: '{{ ds.meta_data.label }}'
+    joinConfiguration:
+      nodeRegistration:
+        name: '{{ ds.meta_data.label }}'
+    preKubeadmCommands:
+    - hostnamectl set-hostname '{{ ds.meta_data.label }}' && hostname -F /etc/hostname
+  machineTemplate:
+    spec:
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: LinodeMachineTemplate
+        name: "${CLUSTER_NAME}-control-plane"
+  replicas: ${CONTROL_PLANE_MACHINE_COUNT}
+  version: "${KUBERNETES_VERSION}"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
+kind: LinodeMachineTemplate
+metadata:
+  name: "${CLUSTER_NAME}-control-plane"
+spec:
+  template:
+    spec:
+      image: "${LINODE_OS:=linode/ubuntu22.04}"
+      type: "${LINODE_CONTROL_PLANE_MACHINE_TYPE}"
+      region: "${LINODE_REGION}"
+      interfaces:
+      - purpose: public
+---
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: MachineDeployment
+metadata:
+  name: "${CLUSTER_NAME}-md-0"
+spec:
+  clusterName: "${CLUSTER_NAME}"
+  replicas: ${WORKER_MACHINE_COUNT}
+  selector:
+    matchLabels: null
+  template:
+    spec:
+      bootstrap:
+        configRef:
+          apiGroup: bootstrap.cluster.x-k8s.io
+          kind: KubeadmConfigTemplate
+          name: "${CLUSTER_NAME}-md-0"
+      clusterName: "${CLUSTER_NAME}"
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: LinodeMachineTemplate
+        name: "${CLUSTER_NAME}-md-0"
+      version: "${KUBERNETES_VERSION}"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
+kind: LinodeMachineTemplate
+metadata:
+  name: "${CLUSTER_NAME}-md-0"
+spec:
+  template:
+    spec:
+      image: "${LINODE_OS:=linode/ubuntu22.04}"
+      type: "${LINODE_MACHINE_TYPE}"
+      region: "${LINODE_REGION}"
+      interfaces:
+      - purpose: public
+---
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+kind: KubeadmConfigTemplate
+metadata:
+  name: "${CLUSTER_NAME}-md-0"
+spec:
+  template:
+    spec:
+      joinConfiguration:
+        nodeRegistration:
+          name: '{{ ds.meta_data.label }}'
+      preKubeadmCommands:
+      - hostnamectl set-hostname '{{ ds.meta_data.label }}' && hostname -F /etc/hostname

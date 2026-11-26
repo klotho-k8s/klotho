@@ -54,6 +54,7 @@ const (
 	EnvProxmoxInsecure = "KLOTHO_PROXMOX_INSECURE"
 	EnvS3AccessKeyID   = "KLOTHO_S3_ACCESS_KEY_ID"
 	EnvS3SecretKey     = "KLOTHO_S3_SECRET_ACCESS_KEY"
+	EnvLinodeToken     = "LINODE_TOKEN"
 )
 
 // Defaults.
@@ -64,9 +65,16 @@ const (
 	// the aws provider. VERIFY against a live run; CAPA's current contract
 	// may require a different release.
 	DefaultAWSVersion = "v2.8.2"
+	// DefaultLinodeVersion is the Cluster API Provider Linode (CAPL) release
+	// installed for the linode provider. The v0.10 series is the first on the
+	// Cluster API v1beta2 contract klotho requires. VERIFY against a live run.
+	DefaultLinodeVersion = "v0.10.17"
 	// ProviderAWS is the aws infrastructure provider's name, as clusterctl
 	// and --provider know it.
 	ProviderAWS = "aws"
+	// ProviderLinode is the linode infrastructure provider's name, as
+	// clusterctl and --provider know it.
+	ProviderLinode = "linode"
 	// FileName is the configuration file's name inside the config directory.
 	FileName = "config.yaml"
 	// IdentityFileName is the default age identity file's name inside the
@@ -105,6 +113,7 @@ type Config struct {
 	Encryption        Encryption `json:"encryption,omitempty"`
 	Proxmox           Proxmox    `json:"proxmox,omitempty"`
 	AWS               AWS        `json:"aws,omitempty"`
+	Linode            Linode     `json:"linode,omitempty"`
 	Docker            Docker     `json:"docker,omitempty"`
 	CAPI              CAPI       `json:"capi,omitempty"`
 	// Nodes configures what every node of a generated cluster does at boot.
@@ -166,6 +175,45 @@ type AWS struct {
 	// PublicIP forces a public IP on the bootstrap instance (public subnet,
 	// no NAT gateway).
 	PublicIP bool `json:"publicIp,omitempty"`
+}
+
+// Linode holds the Linode connection and placement settings for the linode
+// (CAPL) provider. The API token is not stored here; it comes from the
+// environment (LINODE_TOKEN) and is never written back to disk.
+type Linode struct {
+	// Token is the Linode API token. It comes only from the environment
+	// (LINODE_TOKEN), is never accepted from or written to the config file, and
+	// is handed to the in-cluster CAPL controller as its credential.
+	Token string `json:"-"`
+	// Region is the Linode region, e.g. "us-ord". Required for the linode
+	// provider. It must support the Metadata service klotho delivers cloud-init
+	// through.
+	Region string `json:"region,omitempty"`
+	// Type sizes the bootstrap instance (and the template's machines); empty
+	// means g6-standard-2, the smallest type that clears kubeadm's two-CPU
+	// control-plane preflight.
+	Type string `json:"type,omitempty"`
+	// Image is the bootstrap image; empty means linode/ubuntu22.04 (a plain
+	// image, so install-at-boot is needed).
+	Image string `json:"image,omitempty"`
+	// AuthorizedKeys are SSH public keys installed for the instance's root user,
+	// so a failed bootstrap can be diagnosed.
+	AuthorizedKeys []string `json:"authorizedKeys,omitempty"`
+	// RootPass is the instance root password; empty generates a random one
+	// (klotho reaches the node through cloud-init, not the password).
+	RootPass string `json:"rootPass,omitempty"`
+	// Tags are extra Linode tags added to the bootstrap instance.
+	Tags []string `json:"tags,omitempty"`
+	// FirewallID attaches an existing Linode Cloud Firewall to the bootstrap
+	// instance; zero attaches none.
+	FirewallID int `json:"firewallId,omitempty"`
+	// ControlPlaneEndpoint is the API server host. Required: klotho mints
+	// certificates and node zero's cloud-init before the node boots, and Linode
+	// has no free pre-assignable IP. The cheapest choice is a DNS name you
+	// control, pointed at node zero after it boots (no NodeBalancer).
+	ControlPlaneEndpoint string `json:"controlPlaneEndpoint,omitempty"`
+	// Port is the API server port; zero means 6443.
+	Port int `json:"port,omitempty"`
 }
 
 // Docker holds the Cluster API Docker provider (CAPD) settings for local
@@ -591,6 +639,9 @@ func (c *Config) applyEnv() error {
 	if v, ok := os.LookupEnv(EnvS3SecretKey); ok && v != "" {
 		c.Payload.S3.SecretAccessKey = v
 	}
+	if v, ok := os.LookupEnv(EnvLinodeToken); ok && v != "" {
+		c.Linode.Token = v
+	}
 	return nil
 }
 
@@ -623,6 +674,11 @@ func (c *Config) applyDefaults() {
 		aws.Version = DefaultAWSVersion
 	}
 	c.Providers[ProviderAWS] = aws
+	linode := c.Providers[ProviderLinode]
+	if linode.Version == "" {
+		linode.Version = DefaultLinodeVersion
+	}
+	c.Providers[ProviderLinode] = linode
 	if c.Variables == nil {
 		c.Variables = map[string]string{}
 	}
