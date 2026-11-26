@@ -20,6 +20,7 @@ import (
 	"github.com/klotho-k8s/klotho/pkg/cloudinit"
 	"github.com/klotho-k8s/klotho/pkg/cluster"
 	"github.com/klotho-k8s/klotho/pkg/generate"
+	"github.com/klotho-k8s/klotho/pkg/hooks"
 	"github.com/klotho-k8s/klotho/pkg/state"
 	"github.com/klotho-k8s/klotho/provider"
 	"github.com/klotho-k8s/klotho/provider/controlplane"
@@ -121,6 +122,13 @@ type CreateRequest struct {
 	// SSHAuthorizedKeys are installed for the bootstrap node's default user.
 	SSHAuthorizedKeys []string
 	Timeouts          Timeouts
+	// Hooks are the consumer's lifecycle hooks. Create fires the postPivot
+	// hooks (in order) once the cluster is self-managed and healthy. Hooks for
+	// other events are ignored here.
+	Hooks []hooks.Hook
+	// HookExec runs a single hook. Nil means the built-in engine
+	// (hooks.NewEngine). It exists for tests and alternate runners.
+	HookExec hooks.Executor
 }
 
 // Optional provider conventions, checked by type assertion so the library
@@ -323,6 +331,20 @@ func Create(ctx context.Context, deps Deps, req CreateRequest) (_ *cluster.State
 		return st, fmt.Errorf("%w (the state is saved and the node is running; \"klotho delete %s\" removes everything)", err, name)
 	}
 	log.Info("cluster ready", "endpoint", fmt.Sprintf("%s:%d", st.Endpoint.Host, st.Endpoint.Port))
+
+	// The cluster is self-managed and healthy: fire the consumer's postPivot
+	// hooks. The state is already saved and the cluster is up, so a failing
+	// hook (policy fail) does not tear anything down; it is returned so the
+	// caller sees the cluster came up but the hook did not succeed.
+	if hooks.Any(req.Hooks, hooks.PostPivot) {
+		target, err := hookTarget(st)
+		if err != nil {
+			return st, err
+		}
+		if err := hooks.Run(ctx, log, deps.hookExec(req.HookExec), hooks.PostPivot, target, req.Hooks); err != nil {
+			return st, fmt.Errorf("%w (the cluster is up and self-managed; \"klotho delete %s\" removes it)", err, name)
+		}
+	}
 	return st, nil
 }
 

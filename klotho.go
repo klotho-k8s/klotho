@@ -15,6 +15,7 @@ import (
 
 	"github.com/klotho-k8s/klotho/pkg/cluster"
 	"github.com/klotho-k8s/klotho/pkg/generate"
+	"github.com/klotho-k8s/klotho/pkg/hooks"
 	"github.com/klotho-k8s/klotho/pkg/kube"
 	"github.com/klotho-k8s/klotho/pkg/state"
 	"github.com/klotho-k8s/klotho/provider/backend"
@@ -200,6 +201,13 @@ type DeleteOptions struct {
 	Force bool
 	// WatchTimeout bounds a watched delete. Zero means DefaultWatchTimeout.
 	WatchTimeout time.Duration
+	// Hooks are the consumer's lifecycle hooks. Delete fires the preDelete
+	// hooks (in order) before any teardown, while the cluster's API is still
+	// reachable. Hooks for other events are ignored here.
+	Hooks []hooks.Hook
+	// HookExec runs a single hook. Nil means the built-in engine
+	// (hooks.NewEngine). It exists for tests and alternate runners.
+	HookExec hooks.Executor
 }
 
 func (o DeleteOptions) watch() bool { return o.Watch || o.Graceful }
@@ -248,6 +256,18 @@ func Delete(ctx context.Context, deps Deps, name string, opts DeleteOptions) err
 	}
 	if opts.Confirm != nil && !opts.Confirm(plan) {
 		return ErrDeclined
+	}
+	// Fire the consumer's preDelete hooks before any teardown, while the
+	// cluster's API is still reachable. A failing hook (policy fail) aborts
+	// the delete: the cluster is left untouched so the consumer can retry.
+	if hooks.Any(opts.Hooks, hooks.PreDelete) {
+		target, err := hookTarget(st)
+		if err != nil {
+			return err
+		}
+		if err := hooks.Run(ctx, deps.log(), deps.hookExec(opts.HookExec), hooks.PreDelete, target, opts.Hooks); err != nil {
+			return err
+		}
 	}
 	if opts.Force {
 		return deleteDirect(ctx, deps, name, st, plan, log)

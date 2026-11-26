@@ -163,6 +163,9 @@ func runCreate(ctx context.Context, c *cli.Command) error {
 		DefaultVariables:  a.cfg.Variables,
 		SSHAuthorizedKeys: a.cfg.SSHAuthorizedKeys,
 	}
+	if req.Hooks, err = a.cfg.HookSpecs(); err != nil {
+		return err
+	}
 	if d := c.Duration("wait-timeout"); d > 0 {
 		req.Timeouts = klotho.Timeouts{APIServer: d, Providers: d, Apply: d, Node: d}
 	}
