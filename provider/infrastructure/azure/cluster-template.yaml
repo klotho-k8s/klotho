@@ -1,0 +1,236 @@
+# klotho flat, cost-aware Azure (CAPZ) cluster template.
+#
+# It is authored in the Cluster API v1beta2 contract (CAPI-core object
+# references use apiGroup, not apiVersion), which is what klotho's generator
+# requires. The Azure infrastructure objects are
+# infrastructure.cluster.x-k8s.io/v1beta1 - CAPZ v1.23.x's API version - and
+# klotho enforces the v1beta2 contract only on the CAPI-core objects (Cluster,
+# KubeadmControlPlane, MachineDeployment, KubeadmConfigTemplate), which are all
+# v1beta2 here.
+#
+# It is deliberately cheap to run:
+#   * apiServerLB.type: Internal - CAPZ ALWAYS reconciles an API server load
+#     balancer (there is no "disabled", unlike CAPA/CAPL), so the one cost this
+#     provider cannot avoid is that load balancer. An Internal LB uses a private
+#     frontend IP and allocates NO extra public IP. klotho does not route the API
+#     through it: klotho boots node zero with its own static public IP and sets
+#     that as spec.controlPlaneEndpoint (CAPZ only fills the endpoint when it is
+#     empty), so the API is served directly on node zero.
+#   * Bring-your-own network - an existing resource group, virtual network and
+#     subnet (azure.resourceGroup/vnet/subnet). klotho creates no network, so
+#     nothing it does not own can leak.
+#   * Smallest burstable VM (Standard_B2s by default) that clears kubeadm's
+#     two-CPU preflight; azure.spot requests Spot instances for dev/test.
+#   * A single control plane; node zero is adopted, not created, so for the
+#     default (0 workers) CAPZ creates no VM of its own.
+#
+# klotho fills CLUSTER_NAME, NAMESPACE, KUBERNETES_VERSION,
+# CONTROL_PLANE_MACHINE_COUNT and WORKER_MACHINE_COUNT itself, patches
+# spec.controlPlaneEndpoint onto the AzureCluster, and the Azure provider's
+# Prepare fills AZURE_SUBSCRIPTION_ID, AZURE_LOCATION, AZURE_RESOURCE_GROUP,
+# AZURE_VNET_NAME, AZURE_SUBNET_NAME, the machine sizes, the image fields, and
+# the identity fields (AZURE_CLUSTER_IDENTITY_NAME, AZURE_CLIENT_ID,
+# AZURE_TENANT_ID, AZURE_CLIENT_SECRET_NAME). The client secret itself is
+# delivered to the operator through klotho's provider configSecret.
+#
+# The base image (Ubuntu 22.04 LTS) carries no Kubernetes, so create with
+# klotho's install-at-boot (nodes.installKubernetes / --install-kubernetes). No
+# CNI is shipped (like upstream CAPZ templates); apply one after the API server
+# is up.
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: "${CLUSTER_NAME}"
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks:
+      - 192.168.0.0/16
+  controlPlaneRef:
+    apiGroup: controlplane.cluster.x-k8s.io
+    kind: KubeadmControlPlane
+    name: "${CLUSTER_NAME}-control-plane"
+  infrastructureRef:
+    apiGroup: infrastructure.cluster.x-k8s.io
+    kind: AzureCluster
+    name: "${CLUSTER_NAME}"
+---
+# The service principal CAPZ authenticates with. klotho renders this from
+# azure.tenantId/clientId; the password lives in the Secret below, referenced by
+# clientSecret. ServicePrincipal reads the secret directly - no workload
+# identity, no Azure Service Operator.
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: AzureClusterIdentity
+metadata:
+  name: "${AZURE_CLUSTER_IDENTITY_NAME}"
+  labels:
+    clusterctl.cluster.x-k8s.io/move-hierarchy: "true"
+spec:
+  type: ServicePrincipal
+  allowedNamespaces: {}
+  tenantID: "${AZURE_TENANT_ID}"
+  clientID: "${AZURE_CLIENT_ID}"
+  clientSecret:
+    name: "${AZURE_CLIENT_SECRET_NAME}"
+    namespace: "${NAMESPACE}"
+---
+# The service principal password. klotho fills AZURE_CLIENT_SECRET_B64 (base64 of
+# the client secret) from the environment (AZURE_CLIENT_SECRET).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: "${AZURE_CLIENT_SECRET_NAME}"
+  namespace: "${NAMESPACE}"
+type: Opaque
+data:
+  clientSecret: "${AZURE_CLIENT_SECRET_B64}"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: AzureCluster
+metadata:
+  name: "${CLUSTER_NAME}"
+spec:
+  subscriptionID: "${AZURE_SUBSCRIPTION_ID}"
+  location: "${AZURE_LOCATION}"
+  # Bring your own resource group; this is also CAPZ's node resource group, where
+  # klotho created node zero's VM so CAPZ adopts it by name.
+  resourceGroup: "${AZURE_RESOURCE_GROUP}"
+  identityRef:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    kind: AzureClusterIdentity
+    name: "${AZURE_CLUSTER_IDENTITY_NAME}"
+    namespace: "${NAMESPACE}"
+  # klotho patches spec.controlPlaneEndpoint (host/port) to node zero's static
+  # public IP; CAPZ keeps a non-empty endpoint and does not overwrite it.
+  controlPlaneEndpoint:
+    host: "${CONTROL_PLANE_ENDPOINT_IP}"
+    port: ${CONTROL_PLANE_ENDPOINT_PORT:=6443}
+  networkSpec:
+    # Bring your own virtual network and subnet in the resource group above.
+    vnet:
+      name: "${AZURE_VNET_NAME}"
+      resourceGroup: "${AZURE_RESOURCE_GROUP}"
+    subnets:
+    - name: "${AZURE_SUBNET_NAME}"
+      role: control-plane
+    - name: "${AZURE_SUBNET_NAME}"
+      role: node
+    # The one Azure cost CAPZ cannot drop. Internal keeps it off a public IP.
+    apiServerLB:
+      type: Internal
+---
+apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+kind: KubeadmControlPlane
+metadata:
+  name: "${CLUSTER_NAME}-control-plane"
+spec:
+  kubeadmConfigSpec:
+    clusterConfiguration:
+      apiServer:
+        extraArgs:
+        - name: cloud-provider
+          value: external
+      controllerManager:
+        extraArgs:
+        - name: cloud-provider
+          value: external
+    initConfiguration:
+      nodeRegistration:
+        kubeletExtraArgs:
+        - name: cloud-provider
+          value: external
+        name: '{{ ds.meta_data.local_hostname }}'
+    joinConfiguration:
+      nodeRegistration:
+        kubeletExtraArgs:
+        - name: cloud-provider
+          value: external
+        name: '{{ ds.meta_data.local_hostname }}'
+  machineTemplate:
+    spec:
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: AzureMachineTemplate
+        name: "${CLUSTER_NAME}-control-plane"
+  replicas: ${CONTROL_PLANE_MACHINE_COUNT}
+  version: "${KUBERNETES_VERSION}"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: AzureMachineTemplate
+metadata:
+  name: "${CLUSTER_NAME}-control-plane"
+spec:
+  template:
+    spec:
+      vmSize: "${AZURE_CONTROL_PLANE_MACHINE_TYPE}"
+      # Plain Ubuntu 22.04 LTS; node zero is booted by klotho with install-at-boot
+      # and adopted, so CAPZ does not deploy this image for the single control
+      # plane. It applies to any CAPZ-created control plane replica.
+      image:
+        marketplace:
+          publisher: "${AZURE_IMAGE_PUBLISHER}"
+          offer: "${AZURE_IMAGE_OFFER}"
+          sku: "${AZURE_IMAGE_SKU}"
+          version: "${AZURE_IMAGE_VERSION}"
+      osDisk:
+        osType: Linux
+        diskSizeGB: 30
+        managedDisk:
+          storageAccountType: Standard_LRS
+---
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: MachineDeployment
+metadata:
+  name: "${CLUSTER_NAME}-md-0"
+spec:
+  clusterName: "${CLUSTER_NAME}"
+  replicas: ${WORKER_MACHINE_COUNT}
+  selector:
+    matchLabels: null
+  template:
+    spec:
+      bootstrap:
+        configRef:
+          apiGroup: bootstrap.cluster.x-k8s.io
+          kind: KubeadmConfigTemplate
+          name: "${CLUSTER_NAME}-md-0"
+      clusterName: "${CLUSTER_NAME}"
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: AzureMachineTemplate
+        name: "${CLUSTER_NAME}-md-0"
+      version: "${KUBERNETES_VERSION}"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: AzureMachineTemplate
+metadata:
+  name: "${CLUSTER_NAME}-md-0"
+spec:
+  template:
+    spec:
+      vmSize: "${AZURE_NODE_MACHINE_TYPE}"
+      image:
+        marketplace:
+          publisher: "${AZURE_IMAGE_PUBLISHER}"
+          offer: "${AZURE_IMAGE_OFFER}"
+          sku: "${AZURE_IMAGE_SKU}"
+          version: "${AZURE_IMAGE_VERSION}"
+      osDisk:
+        osType: Linux
+        diskSizeGB: 30
+        managedDisk:
+          storageAccountType: Standard_LRS
+---
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+kind: KubeadmConfigTemplate
+metadata:
+  name: "${CLUSTER_NAME}-md-0"
+spec:
+  template:
+    spec:
+      joinConfiguration:
+        nodeRegistration:
+          kubeletExtraArgs:
+          - name: cloud-provider
+            value: external
+          name: '{{ ds.meta_data.local_hostname }}'

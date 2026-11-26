@@ -27,7 +27,7 @@ func newCreateCommand() *cli.Command {
 			&cli.StringFlag{
 				Name:     "provider",
 				Aliases:  []string{"p"},
-				Usage:    "infrastructure provider (proxmox, docker, aws, linode, gcp)",
+				Usage:    "infrastructure provider (proxmox, docker, aws, linode, gcp, azure)",
 				Required: true,
 			},
 			&cli.StringFlag{
@@ -102,8 +102,8 @@ func runCreate(ctx context.Context, c *cli.Command) error {
 		return err
 	}
 	provider, cp := c.String("provider"), c.String("control-plane")
-	if provider != providerProxmox && provider != providerDocker && provider != providerAWS && provider != providerLinode && provider != providerGCP {
-		return fmt.Errorf("create: infrastructure provider %q: %w (available: %s, %s, %s, %s, %s)", provider, ErrNotImplemented, providerProxmox, providerDocker, providerAWS, providerLinode, providerGCP)
+	if provider != providerProxmox && provider != providerDocker && provider != providerAWS && provider != providerLinode && provider != providerGCP && provider != providerAzure {
+		return fmt.Errorf("create: infrastructure provider %q: %w (available: %s, %s, %s, %s, %s, %s)", provider, ErrNotImplemented, providerProxmox, providerDocker, providerAWS, providerLinode, providerGCP, providerAzure)
 	}
 	if cp != cpKubeadm {
 		return fmt.Errorf("create: control plane provider %q: %w (available: %s)", cp, ErrNotImplemented, cpKubeadm)

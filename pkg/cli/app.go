@@ -24,6 +24,7 @@ import (
 	"github.com/klotho-k8s/klotho/provider/controlplane/kubeadm"
 	"github.com/klotho-k8s/klotho/provider/infrastructure"
 	awsprovider "github.com/klotho-k8s/klotho/provider/infrastructure/aws"
+	azureprovider "github.com/klotho-k8s/klotho/provider/infrastructure/azure"
 	dockerprovider "github.com/klotho-k8s/klotho/provider/infrastructure/docker"
 	gcpprovider "github.com/klotho-k8s/klotho/provider/infrastructure/gcp"
 	linodeprovider "github.com/klotho-k8s/klotho/provider/infrastructure/linode"
@@ -38,6 +39,7 @@ const (
 	providerAWS     = "aws"
 	providerLinode  = "linode"
 	providerGCP     = "gcp"
+	providerAzure   = "azure"
 	providerDocker  = "docker"
 	cpKubeadm       = "kubeadm"
 )
@@ -382,6 +384,35 @@ func (a *app) infra(provider string) (infrastructure.Provider, error) {
 			return nil, err
 		}
 		return gcpInfra{gcpprovider.New(client, gc)}, nil
+	case providerAzure:
+		az := a.cfg.Azure
+		ac := azureprovider.Config{
+			SubscriptionID: az.SubscriptionID,
+			TenantID:       az.TenantID,
+			ClientID:       az.ClientID,
+			ClientSecret:   az.ClientSecret,
+			Location:       az.Location,
+			ResourceGroup:  az.ResourceGroup,
+			VNet:           az.VNet,
+			Subnet:         az.Subnet,
+			VMSize:         az.VMSize,
+			Image: azureprovider.ImageRef{
+				Publisher: az.ImagePublisher,
+				Offer:     az.ImageOffer,
+				SKU:       az.ImageSKU,
+				Version:   az.ImageVersion,
+			},
+			AdminUsername:        az.AdminUsername,
+			SSHPublicKey:         az.SSHPublicKey,
+			Spot:                 az.Spot,
+			ControlPlaneEndpoint: az.ControlPlaneEndpoint,
+			Port:                 az.Port,
+		}
+		client, err := azureprovider.NewClient(ac)
+		if err != nil {
+			return nil, err
+		}
+		return azureInfra{azureprovider.New(client, ac)}, nil
 	case providerDocker:
 		d := a.cfg.Docker
 		return dockerInfra{dockerprovider.New(nil, dockerprovider.Config{
@@ -393,7 +424,7 @@ func (a *app) infra(provider string) (infrastructure.Provider, error) {
 			CleanupImage: d.CleanupImage,
 		})}, nil
 	default:
-		return nil, fmt.Errorf("infrastructure provider %q: %w (available: %s, %s, %s, %s, %s)", provider, ErrNotImplemented, providerProxmox, providerDocker, providerAWS, providerLinode, providerGCP)
+		return nil, fmt.Errorf("infrastructure provider %q: %w (available: %s, %s, %s, %s, %s, %s)", provider, ErrNotImplemented, providerProxmox, providerDocker, providerAWS, providerLinode, providerGCP, providerAzure)
 	}
 }
 
@@ -446,6 +477,24 @@ func (a *app) providerSecretData(provider string) map[string]string {
 				return map[string]string{"GCP_B64ENCODED_CREDENTIALS": base64.StdEncoding.EncodeToString(b)}
 			}
 		}
+	case providerAzure:
+		az := a.cfg.Azure
+		data := map[string]string{}
+		if az.SubscriptionID != "" {
+			data["AZURE_SUBSCRIPTION_ID"] = az.SubscriptionID
+		}
+		if az.TenantID != "" {
+			data["AZURE_TENANT_ID"] = az.TenantID
+		}
+		if az.ClientID != "" {
+			data["AZURE_CLIENT_ID"] = az.ClientID
+		}
+		if az.ClientSecret != "" {
+			data["AZURE_CLIENT_SECRET"] = az.ClientSecret
+		}
+		if len(data) > 0 {
+			return data
+		}
 	}
 	return nil
 }
@@ -470,6 +519,11 @@ type gcpInfra struct{ *gcpprovider.Provider }
 
 func (gcpInfra) Tag(cluster string) string { return gcpprovider.Tag(cluster) }
 
+// azureInfra adds the provider's tag convention to the Azure provider.
+type azureInfra struct{ *azureprovider.Provider }
+
+func (azureInfra) Tag(cluster string) string { return azureprovider.Tag(cluster) }
+
 // dockerInfra adds the provider's cluster-label convention to the Docker
 // provider.
 type dockerInfra struct{ *dockerprovider.Provider }
@@ -488,12 +542,14 @@ var (
 	_ klotho.Tagger           = awsInfra{}
 	_ klotho.Tagger           = linodeInfra{}
 	_ klotho.Tagger           = gcpInfra{}
+	_ klotho.Tagger           = azureInfra{}
 	_ klotho.BootstrapNamer   = kubeadmProvider{}
 	_ controlplane.Provider   = kubeadmProvider{}
 	_ infrastructure.Provider = proxmoxInfra{}
 	_ infrastructure.Provider = awsInfra{}
 	_ infrastructure.Provider = linodeInfra{}
 	_ infrastructure.Provider = gcpInfra{}
+	_ infrastructure.Provider = azureInfra{}
 )
 
 func firstNonEmpty(s ...string) string {

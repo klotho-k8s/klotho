@@ -58,6 +58,8 @@ const (
 	// EnvGCPCredentials is the standard GCP service-account key path; klotho
 	// reads it for gcp.credentialsFile when that is unset.
 	EnvGCPCredentials = "GOOGLE_APPLICATION_CREDENTIALS"
+	// EnvAzureClientSecret is the Azure service-principal client secret.
+	EnvAzureClientSecret = "AZURE_CLIENT_SECRET"
 )
 
 // Defaults.
@@ -78,6 +80,11 @@ const (
 	// klotho requires. VERIFY the release and the contract compatibility against
 	// a live run.
 	DefaultGCPVersion = "v1.8.1"
+	// DefaultAzureVersion is the Cluster API Provider Azure (CAPZ) release
+	// installed for the azure provider. CAPZ v1.23.x is built against Cluster
+	// API v1.12.x (DefaultCAPIVersion), and its infrastructure CRDs are
+	// infrastructure.cluster.x-k8s.io/v1beta1. VERIFY against a live run.
+	DefaultAzureVersion = "v1.23.3"
 	// ProviderAWS is the aws infrastructure provider's name, as clusterctl
 	// and --provider know it.
 	ProviderAWS = "aws"
@@ -87,6 +94,9 @@ const (
 	// ProviderGCP is the gcp infrastructure provider's name, as clusterctl and
 	// --provider know it.
 	ProviderGCP = "gcp"
+	// ProviderAzure is the azure infrastructure provider's name, as clusterctl
+	// and --provider know it.
+	ProviderAzure = "azure"
 	// FileName is the configuration file's name inside the config directory.
 	FileName = "config.yaml"
 	// IdentityFileName is the default age identity file's name inside the
@@ -131,6 +141,7 @@ type Config struct {
 	AWS               AWS        `json:"aws,omitempty"`
 	Linode            Linode     `json:"linode,omitempty"`
 	GCP               GCP        `json:"gcp,omitempty"`
+	Azure             Azure      `json:"azure,omitempty"`
 	Docker            Docker     `json:"docker,omitempty"`
 	CAPI              CAPI       `json:"capi,omitempty"`
 	// Nodes configures what every node of a generated cluster does at boot.
@@ -295,6 +306,55 @@ type GCP struct {
 	// in-cluster controller has no credential unless ADC resolves one it can
 	// read). It is read from GOOGLE_APPLICATION_CREDENTIALS when unset.
 	CredentialsFile string `json:"credentialsFile,omitempty"`
+}
+
+// Azure holds the Azure connection and placement settings for the azure (CAPZ)
+// provider. The service principal's client secret is not stored here; it comes
+// from the environment (AZURE_CLIENT_SECRET) and is never written back to disk.
+type Azure struct {
+	// SubscriptionID is the Azure subscription the cluster lives in. Required.
+	SubscriptionID string `json:"subscriptionId,omitempty"`
+	// TenantID and ClientID identify the service principal klotho authenticates
+	// with and hands to the in-cluster CAPZ controller. Required.
+	TenantID string `json:"tenantId,omitempty"`
+	ClientID string `json:"clientId,omitempty"`
+	// ClientSecret is the service principal password. It comes only from the
+	// environment (AZURE_CLIENT_SECRET), is never accepted from or written to the
+	// config file, and is handed to CAPZ as its credential.
+	ClientSecret string `json:"-"`
+	// Location is the Azure region, e.g. "eastus". Required.
+	Location string `json:"location,omitempty"`
+	// ResourceGroup is an existing resource group the bootstrap VM is created in;
+	// it is also CAPZ's node resource group. Required (klotho creates no RG).
+	ResourceGroup string `json:"resourceGroup,omitempty"`
+	// VNet and Subnet are an existing virtual network and subnet in ResourceGroup
+	// the bootstrap VM attaches to. Required (klotho creates no network).
+	VNet   string `json:"vnet,omitempty"`
+	Subnet string `json:"subnet,omitempty"`
+	// VMSize sizes the bootstrap VM (and the template's machines); empty means
+	// Standard_B2s, the smallest burstable size that clears kubeadm's two-CPU
+	// preflight.
+	VMSize string `json:"vmSize,omitempty"`
+	// ImagePublisher, ImageOffer, ImageSKU and ImageVersion override the
+	// bootstrap marketplace image; empty means Ubuntu 22.04 LTS gen2 (a plain
+	// image, so install-at-boot is needed).
+	ImagePublisher string `json:"imagePublisher,omitempty"`
+	ImageOffer     string `json:"imageOffer,omitempty"`
+	ImageSKU       string `json:"imageSku,omitempty"`
+	ImageVersion   string `json:"imageVersion,omitempty"`
+	// AdminUsername is the Linux admin user Azure creates; empty means "klotho".
+	AdminUsername string `json:"adminUsername,omitempty"`
+	// SSHPublicKey is an OpenSSH public key installed for the admin user, so a
+	// failed bootstrap can be diagnosed. Empty sets a random admin password.
+	SSHPublicKey string `json:"sshPublicKey,omitempty"`
+	// Spot requests Spot instances. Development and test only.
+	Spot bool `json:"spot,omitempty"`
+	// ControlPlaneEndpoint is the API server host. Empty means node zero's own
+	// static public IP (allocated by Prepare) is used — the cheapest endpoint,
+	// no public load balancer.
+	ControlPlaneEndpoint string `json:"controlPlaneEndpoint,omitempty"`
+	// Port is the API server port; zero means 6443.
+	Port int `json:"port,omitempty"`
 }
 
 // Docker holds the Cluster API Docker provider (CAPD) settings for local
@@ -772,6 +832,9 @@ func (c *Config) applyEnv() error {
 			c.GCP.CredentialsFile = v
 		}
 	}
+	if v, ok := os.LookupEnv(EnvAzureClientSecret); ok && v != "" {
+		c.Azure.ClientSecret = v
+	}
 	return nil
 }
 
@@ -815,6 +878,11 @@ func (c *Config) applyDefaults() {
 	}
 	c.Providers[ProviderGCP] = gcp
 	c.GCP.CredentialsFile = Expand(c.GCP.CredentialsFile)
+	azure := c.Providers[ProviderAzure]
+	if azure.Version == "" {
+		azure.Version = DefaultAzureVersion
+	}
+	c.Providers[ProviderAzure] = azure
 	if c.Variables == nil {
 		c.Variables = map[string]string{}
 	}

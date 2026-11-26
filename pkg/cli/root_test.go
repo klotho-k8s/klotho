@@ -435,6 +435,43 @@ func TestProviderSecretDataLinode(t *testing.T) {
 	}
 }
 
+func TestProviderSecretDataAzure(t *testing.T) {
+	a := &app{cfg: &config.Config{Azure: config.Azure{
+		SubscriptionID: "sub-1", TenantID: "tenant-1", ClientID: "client-1", ClientSecret: "shh",
+	}}}
+	data := a.providerSecretData(providerAzure)
+	for k, want := range map[string]string{
+		"AZURE_SUBSCRIPTION_ID": "sub-1",
+		"AZURE_TENANT_ID":       "tenant-1",
+		"AZURE_CLIENT_ID":       "client-1",
+		"AZURE_CLIENT_SECRET":   "shh",
+	} {
+		if data[k] != want {
+			t.Fatalf("providerSecretData(azure)[%s] = %q, want %q", k, data[k], want)
+		}
+	}
+	// With nothing configured, nothing is emitted.
+	a2 := &app{cfg: &config.Config{}}
+	if d := a2.providerSecretData(providerAzure); d != nil {
+		t.Fatalf("providerSecretData(azure) with no config = %v, want nil", d)
+	}
+}
+
+func TestCreateAdmitsAzureButNeedsCredentials(t *testing.T) {
+	isolate(t)
+	run(t, "", "init")
+	// azure is a known provider (it passes the create guard), but with no
+	// service principal the provider cannot be built, so the error is about the
+	// credentials, not ErrNotImplemented.
+	r := run(t, "", "create", "demo", "--provider", "azure")
+	if errors.Is(r.runErr, ErrNotImplemented) {
+		t.Fatalf("azure should be an admitted provider, got %v", r.runErr)
+	}
+	if r.runErr == nil || !strings.Contains(r.runErr.Error(), "subscriptionId") {
+		t.Fatalf("want a missing-credentials error, got %v", r.runErr)
+	}
+}
+
 func TestCreateNeedsProxmoxSecret(t *testing.T) {
 	isolate(t)
 	run(t, "", "init")
