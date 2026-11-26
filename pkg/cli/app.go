@@ -23,6 +23,7 @@ import (
 	"github.com/klotho-k8s/klotho/provider/infrastructure"
 	awsprovider "github.com/klotho-k8s/klotho/provider/infrastructure/aws"
 	dockerprovider "github.com/klotho-k8s/klotho/provider/infrastructure/docker"
+	linodeprovider "github.com/klotho-k8s/klotho/provider/infrastructure/linode"
 	proxmoxprovider "github.com/klotho-k8s/klotho/provider/infrastructure/proxmox"
 	"github.com/klotho-k8s/klotho/provider/payload"
 	s3payload "github.com/klotho-k8s/klotho/provider/payload/s3"
@@ -32,6 +33,7 @@ import (
 const (
 	providerProxmox = "proxmox"
 	providerAWS     = "aws"
+	providerLinode  = "linode"
 	providerDocker  = "docker"
 	cpKubeadm       = "kubeadm"
 )
@@ -302,6 +304,25 @@ func (a *app) infra(provider string) (infrastructure.Provider, error) {
 			return nil, err
 		}
 		return awsInfra{awsprovider.New(client, ac)}, nil
+	case providerLinode:
+		l := a.cfg.Linode
+		lc := linodeprovider.Config{
+			Token:                l.Token,
+			Region:               l.Region,
+			Type:                 l.Type,
+			Image:                l.Image,
+			AuthorizedKeys:       l.AuthorizedKeys,
+			RootPass:             l.RootPass,
+			Tags:                 l.Tags,
+			FirewallID:           l.FirewallID,
+			ControlPlaneEndpoint: l.ControlPlaneEndpoint,
+			Port:                 l.Port,
+		}
+		client, err := linodeprovider.NewClient(lc)
+		if err != nil {
+			return nil, err
+		}
+		return linodeInfra{linodeprovider.New(client, lc)}, nil
 	case providerDocker:
 		d := a.cfg.Docker
 		return dockerInfra{dockerprovider.New(nil, dockerprovider.Config{
@@ -312,7 +333,7 @@ func (a *app) infra(provider string) (infrastructure.Provider, error) {
 			Socket:    d.Socket,
 		})}, nil
 	default:
-		return nil, fmt.Errorf("infrastructure provider %q: %w (available: %s, %s, %s)", provider, ErrNotImplemented, providerProxmox, providerDocker, providerAWS)
+		return nil, fmt.Errorf("infrastructure provider %q: %w (available: %s, %s, %s, %s)", provider, ErrNotImplemented, providerProxmox, providerDocker, providerAWS, providerLinode)
 	}
 }
 
@@ -335,6 +356,10 @@ func (a *app) providerSecretData(provider string) map[string]string {
 			data["PROXMOX_ENDPOINT_DISCOVERY"] = "true"
 		}
 		return data
+	case providerLinode:
+		if t := a.cfg.Linode.Token; t != "" {
+			return map[string]string{"LINODE_TOKEN": t}
+		}
 	}
 	return nil
 }
@@ -348,6 +373,11 @@ func (proxmoxInfra) Tag(cluster string) string { return proxmoxprovider.Tag(clus
 type awsInfra struct{ *awsprovider.Provider }
 
 func (awsInfra) Tag(cluster string) string { return awsprovider.Tag(cluster) }
+
+// linodeInfra adds the provider's tag convention to the Linode provider.
+type linodeInfra struct{ *linodeprovider.Provider }
+
+func (linodeInfra) Tag(cluster string) string { return linodeprovider.Tag(cluster) }
 
 // dockerInfra adds the provider's cluster-label convention to the Docker
 // provider.
@@ -365,10 +395,12 @@ func (kubeadmProvider) BootstrapMachineName(cluster string) string {
 var (
 	_ klotho.Tagger           = proxmoxInfra{}
 	_ klotho.Tagger           = awsInfra{}
+	_ klotho.Tagger           = linodeInfra{}
 	_ klotho.BootstrapNamer   = kubeadmProvider{}
 	_ controlplane.Provider   = kubeadmProvider{}
 	_ infrastructure.Provider = proxmoxInfra{}
 	_ infrastructure.Provider = awsInfra{}
+	_ infrastructure.Provider = linodeInfra{}
 )
 
 func firstNonEmpty(s ...string) string {

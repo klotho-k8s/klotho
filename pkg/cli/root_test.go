@@ -30,7 +30,8 @@ func isolate(t *testing.T) string {
 	t.Setenv("XDG_STATE_HOME", filepath.Join(dir, "state"))
 	for _, e := range []string{"KLOTHO_BACKEND", "KLOTHO_CONFIG", "KLOTHO_PROFILE",
 		config.EnvStateDir, config.EnvIdentityFile, config.EnvRecipients,
-		config.EnvProxmoxURL, config.EnvProxmoxTokenID, config.EnvProxmoxSecret, config.EnvProxmoxInsecure} {
+		config.EnvProxmoxURL, config.EnvProxmoxTokenID, config.EnvProxmoxSecret, config.EnvProxmoxInsecure,
+		config.EnvLinodeToken} {
 		t.Setenv(e, "")
 	}
 	return dir
@@ -368,6 +369,34 @@ func TestCreateRejectsUnknownProviders(t *testing.T) {
 	r = run(t, "", "create", "demo", "--provider", "proxmox", "--var", "novalue")
 	if r.runErr == nil || !strings.Contains(r.runErr.Error(), "KEY=VALUE") {
 		t.Fatalf("var: %v", r.runErr)
+	}
+}
+
+func TestCreateAdmitsLinodeButNeedsToken(t *testing.T) {
+	isolate(t)
+	run(t, "", "init")
+	// linode is a known provider (it passes the create guard), but with no
+	// LINODE_TOKEN the provider cannot be built, so the error is about the
+	// token, not ErrNotImplemented.
+	r := run(t, "", "create", "demo", "--provider", "linode")
+	if errors.Is(r.runErr, ErrNotImplemented) {
+		t.Fatalf("linode should be an admitted provider, got %v", r.runErr)
+	}
+	if r.runErr == nil || !strings.Contains(r.runErr.Error(), "LINODE_TOKEN") {
+		t.Fatalf("want a missing-token error, got %v", r.runErr)
+	}
+}
+
+func TestProviderSecretDataLinode(t *testing.T) {
+	a := &app{cfg: &config.Config{Linode: config.Linode{Token: "tok-xyz"}}}
+	data := a.providerSecretData(providerLinode)
+	if data["LINODE_TOKEN"] != "tok-xyz" {
+		t.Fatalf("providerSecretData(linode) = %v, want LINODE_TOKEN=tok-xyz", data)
+	}
+	// With no token, nothing is emitted.
+	a2 := &app{cfg: &config.Config{}}
+	if d := a2.providerSecretData(providerLinode); d != nil {
+		t.Fatalf("providerSecretData(linode) with no token = %v, want nil", d)
 	}
 }
 

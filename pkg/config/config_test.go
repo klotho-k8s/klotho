@@ -22,7 +22,7 @@ func isolate(t *testing.T) string {
 	t.Setenv("XDG_STATE_HOME", filepath.Join(dir, "state"))
 	for _, e := range []string{EnvBackend, EnvStateDir, EnvIdentityFile, EnvRecipients,
 		EnvProxmoxURL, EnvProxmoxTokenID, EnvProxmoxSecret, EnvProxmoxInsecure,
-		EnvS3AccessKeyID, EnvS3SecretKey} {
+		EnvS3AccessKeyID, EnvS3SecretKey, EnvLinodeToken} {
 		t.Setenv(e, "")
 	}
 	return dir
@@ -55,8 +55,39 @@ func TestLoadMissingFileGivesDefaults(t *testing.T) {
 	if c.CAPI.Version != DefaultCAPIVersion || c.Providers["proxmox"].Version != DefaultProxmoxVersion {
 		t.Errorf("versions: %s %s", c.CAPI.Version, c.Providers["proxmox"].Version)
 	}
+	if c.Providers[ProviderLinode].Version != DefaultLinodeVersion {
+		t.Errorf("linode default version = %q, want %q", c.Providers[ProviderLinode].Version, DefaultLinodeVersion)
+	}
 	if c.EffectiveBackend() != BackendFile {
 		t.Errorf("backend = %s", c.EffectiveBackend())
+	}
+}
+
+func TestLinodeTokenFromEnvOnly(t *testing.T) {
+	isolate(t)
+	// A token set in the file must be ignored (the field is json:"-"); only the
+	// environment supplies it.
+	writeConfig(t, "linode:\n  region: us-ord\n  controlPlaneEndpoint: cp.example.com\n")
+	t.Setenv(EnvLinodeToken, "tok-from-env")
+	c, err := Load("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Linode.Region != "us-ord" || c.Linode.ControlPlaneEndpoint != "cp.example.com" {
+		t.Errorf("linode config not loaded: %+v", c.Linode)
+	}
+	if c.Linode.Token != "tok-from-env" {
+		t.Errorf("token = %q, want the environment value", c.Linode.Token)
+	}
+}
+
+func TestLinodeTokenInFileRejected(t *testing.T) {
+	isolate(t)
+	// A "token" key in the linode block is an unknown field (json:"-"), so Load
+	// rejects it rather than silently storing a credential in the file.
+	writeConfig(t, "linode:\n  region: us-ord\n  token: should-not-be-here\n")
+	if _, err := Load("", ""); err == nil {
+		t.Fatal("expected Load to reject a token key in the config file")
 	}
 }
 
