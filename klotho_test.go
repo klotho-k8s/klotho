@@ -508,14 +508,19 @@ func TestDeleteFireAndForget(t *testing.T) {
 		"kube.ConnectAdmin demo",
 		"kube.Delete Cluster demo",
 		"infra.LaunchDeletionSidecar demo",
+		"store.Delete demo",
 	)
-	// Fire-and-forget hands the rest to the sidecar: no in-process sweep, and
-	// the record is left (the sidecar and a later list/delete reap it).
-	if h.rec.has("infra.Teardown") || h.rec.has("store.Delete") {
+	// Fire-and-forget hands the infrastructure teardown to the sidecar (no
+	// in-process sweep), but clears the state record immediately so the cluster
+	// does not linger in `klotho list` after it reports deleted.
+	if h.rec.has("infra.Teardown") {
 		t.Fatalf("fire-and-forget swept the infrastructure; calls: %v", h.rec.list())
 	}
-	if h.store.state("demo") == nil {
-		t.Fatal("record removed by a fire-and-forget delete")
+	if h.store.state("demo") != nil {
+		t.Fatal("record not removed by a fire-and-forget delete")
+	}
+	if err := Delete(t.Context(), h.deps, "demo", DeleteOptions{}); !errors.Is(err, backend.ErrNotFound) {
+		t.Fatalf("second delete: %v", err)
 	}
 }
 
