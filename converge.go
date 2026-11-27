@@ -3,6 +3,7 @@ package klotho
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -124,6 +125,17 @@ func converge(ctx context.Context, deps Deps, req CreateRequest, st *cluster.Sta
 		}
 	}
 
+	// The bootstrap node seeded <name>-kubeconfig with the kubeconfig kubeadm
+	// minted against the placeholder control plane endpoint. On a provider whose
+	// endpoint is only known after the node boots (Hyper-V's DHCP address, with
+	// no load balancer), that placeholder is unreachable, yet the self-hosted
+	// Cluster API controllers dial the workload API through this very Secret once
+	// KubeadmControlPlane adopts it. Retarget it at the endpoint now in state,
+	// before the bundle apply hands the control plane that Secret.
+	if err := reseedKubeconfigSecret(ctx, deps, cl, secretGVK, ns, st.Spec.Name, st.Endpoint, t.Apply); err != nil {
+		return err
+	}
+
 	if err := setPaused(ctx, deps, cl, clusterObj, true, t.Apply); err != nil {
 		return err
 	}
@@ -205,6 +217,50 @@ func converge(ctx context.Context, deps Deps, req CreateRequest, st *cluster.Sta
 			ErrNodeTimeout, err, st.Spec.Name)
 	}
 	return nil
+}
+
+// reseedKubeconfigSecret rewrites the server URL in the <cluster>-kubeconfig
+// Secret's kubeconfig to ep, so a control plane endpoint learned only after the
+// bootstrap node booted reaches the Secret the self-hosted control plane serves
+// to its controllers. It is a no-op when the Secret already targets ep (every
+// provider with a load balancer), so it is safe to run unconditionally.
+func reseedKubeconfigSecret(ctx context.Context, deps Deps, cl kube.Cluster, gvk schema.GroupVersionKind, ns, clusterName string, ep cluster.Endpoint, timeout time.Duration) error {
+	name := clusterName + "-kubeconfig"
+	return waitFor(ctx, deps, timeout, "retargeting Secret "+ns+"/"+name+" at the control plane endpoint", func(ctx context.Context) (bool, string) {
+		s, err := cl.Get(ctx, gvk, ns, name)
+		if err != nil {
+			return false, err.Error()
+		}
+		enc, ok, err := unstructured.NestedString(s.Object, "data", "value")
+		if err != nil {
+			return false, err.Error()
+		}
+		if !ok || enc == "" {
+			// kubeadm seeds the Secret and its kubeconfig payload together, so a
+			// present Secret with no data.value carries nothing to retarget.
+			return true, ""
+		}
+		raw, err := base64.StdEncoding.DecodeString(enc)
+		if err != nil {
+			return false, fmt.Sprintf("decoding kubeconfig: %v", err)
+		}
+		out, err := kube.RetargetServer(raw, ep.Host, ep.Port)
+		if err != nil {
+			return false, err.Error()
+		}
+		if bytes.Equal(out, raw) {
+			return true, ""
+		}
+		patch, err := json.Marshal(map[string]any{"data": map[string]any{"value": base64.StdEncoding.EncodeToString(out)}})
+		if err != nil {
+			return false, err.Error()
+		}
+		if err := cl.Patch(ctx, gvk, ns, name, types.MergePatchType, patch); err != nil {
+			return false, err.Error()
+		}
+		deps.log().Info("retargeted the control plane kubeconfig Secret", "secret", ns+"/"+name, "endpoint", fmt.Sprintf("%s:%d", ep.Host, ep.Port))
+		return true, ""
+	})
 }
 
 func clusterObject(b *generate.Bundle) (*unstructured.Unstructured, error) {

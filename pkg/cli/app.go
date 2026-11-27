@@ -516,7 +516,11 @@ func (a *app) providerSecretData(provider string) map[string]string {
 			data["HYPERV_AGENT_ENDPOINT"] = ep
 		}
 		if ca, err := h.ResolvedAgentCA(); err == nil && ca != "" {
-			data["HYPERV_AGENT_CA"] = ca
+			// The operator substitutes configSecret values into the provider
+			// components with a plain ${VAR} replacement, which mangles a
+			// multi-line PEM. Hand the CA over base64-encoded; the controller
+			// decodes it in memory (HYPERV_AGENT_CA).
+			data["HYPERV_AGENT_CA"] = base64.StdEncoding.EncodeToString([]byte(ca))
 		}
 		if tok, err := h.ResolvedAgentToken(); err == nil && tok != "" {
 			data["HYPERV_AGENT_TOKEN"] = tok

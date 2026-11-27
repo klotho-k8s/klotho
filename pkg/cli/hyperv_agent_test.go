@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"os"
 	"path/filepath"
@@ -91,8 +92,10 @@ func TestProviderSecretDataHyperv(t *testing.T) {
 	got := a.providerSecretData(providerHyperv)
 	want := map[string]string{
 		"HYPERV_AGENT_ENDPOINT": "172.30.32.1:7443",
-		"HYPERV_AGENT_CA":       "CA",
-		"HYPERV_AGENT_TOKEN":    "T",
+		// base64-encoded so the operator's ${VAR} substitution carries the
+		// multi-line PEM intact; the controller decodes it.
+		"HYPERV_AGENT_CA":    base64.StdEncoding.EncodeToString([]byte("CA")),
+		"HYPERV_AGENT_TOKEN": "T",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %v", got)

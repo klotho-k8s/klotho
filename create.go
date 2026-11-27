@@ -332,6 +332,17 @@ func Create(ctx context.Context, deps Deps, req CreateRequest) (_ *cluster.State
 				return nil, fmt.Errorf("retargeting admin kubeconfig at the bootstrap node: %w", err)
 			}
 			creds.Kubeconfig = kc
+			// The bundle was authored with the placeholder endpoint. Converge
+			// applies it to the self-hosted cluster, where the Cluster API
+			// controllers reach the workload API through the kubeconfig the
+			// control plane provider mints from the infrastructure cluster's
+			// controlPlaneEndpoint. Leave it at the placeholder and that
+			// kubeconfig points at an address the node never has, so the machine
+			// controller can never set the bootstrap Machine's nodeRef and the
+			// pivot stalls. Retarget the bundle's endpoint at the node too.
+			if err := generate.SetControlPlaneEndpoint(bundle, st.Endpoint); err != nil {
+				return nil, fmt.Errorf("retargeting bundle control plane endpoint at the bootstrap node: %w", err)
+			}
 		}
 	}
 

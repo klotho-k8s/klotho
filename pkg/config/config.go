@@ -100,10 +100,12 @@ const (
 	// DefaultHyperVVersion is the Cluster API Hyper-V provider release klotho
 	// installs for the hyperv provider. It is a pre-release; the controller
 	// image and release manifests are produced from
-	// luthermonson/cluster-api-provider-hyperv. v0.1.1 carries the CRD contract
+	// klotho-k8s/cluster-api-provider-hyperv. v0.1.1 carries the CRD contract
 	// labels the operator needs to adopt the provider's objects; v0.1.2 adds the
-	// atomic, disconnect-tolerant DeleteVM so a graceful delete leaves no orphan.
-	DefaultHyperVVersion = "v0.1.2"
+	// atomic, disconnect-tolerant DeleteVM so a graceful delete leaves no orphan;
+	// v0.1.3 wires the HYPERV_AGENT_* env into the controller and reads the agent
+	// CA inline, so the manager runs as a Linux pod driving the host agent.
+	DefaultHyperVVersion = "v0.1.3"
 	// ProviderHyperV is the hyperv infrastructure provider's name, as
 	// clusterctl and --provider know it.
 	ProviderHyperV = "hyperv"
