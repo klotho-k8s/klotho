@@ -31,6 +31,7 @@ adapter contract, with vSphere, OpenStack and Hetzner next.
 | **Azure** | CAPZ | ✅ Working | help wanted |
 | **Linode** | CAPL | ✅ Working | help wanted |
 | **Hyper-V** | CAPHV | 🧪 Experimental | single Windows node |
+| **libvirt / KVM** | CAPLV | 🧪 Experimental | build + unit (WSL2 runbook) |
 | **Apple `vz`** | CAPVZ | 🧪 Scaffold | — |
 
 Full status, teardown details, and how to test a provider on **your**

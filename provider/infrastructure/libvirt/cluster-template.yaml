@@ -1,0 +1,107 @@
+# klotho flat, single-node libvirt (Cluster API libvirt provider) cluster template.
+#
+# It is authored in the Cluster API v1beta2 contract (object references use
+# apiGroup, not apiVersion), which is what klotho's generator requires. The
+# libvirt infrastructure objects are v1alpha1, the provider's own version.
+#
+# This is the EXPERIMENTAL single-node dev layout: one control-plane domain, no
+# workers, on one libvirt/KVM host. klotho fills CLUSTER_NAME, NAMESPACE,
+# KUBERNETES_VERSION and CONTROL_PLANE_MACHINE_COUNT itself, and the libvirt
+# provider's Prepare fills LIBVIRT_URI, LIBVIRT_HOST, CONTROL_PLANE_ENDPOINT_HOST
+# (the single control-plane domain's address, since libvirt has no load
+# balancer), LIBVIRT_IMAGE, LIBVIRT_POOL and LIBVIRT_NETWORK. Nothing else needs
+# to be supplied.
+#
+# The base image is a cloud-init (NoCloud) enabled qcow2 cloud image. If it
+# carries no Kubernetes, create the cluster with "klotho create
+# --install-kubernetes" (or nodes.installKubernetes: true) so containerd and the
+# KUBERNETES_VERSION of kubeadm/kubelet/kubectl are installed on the node before
+# kubeadm runs.
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: "${CLUSTER_NAME}"
+  namespace: "${NAMESPACE}"
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks:
+      - 192.168.0.0/16
+  controlPlaneRef:
+    apiGroup: controlplane.cluster.x-k8s.io
+    kind: KubeadmControlPlane
+    name: "${CLUSTER_NAME}-control-plane"
+  infrastructureRef:
+    apiGroup: infrastructure.cluster.x-k8s.io
+    kind: LibvirtCluster
+    name: "${CLUSTER_NAME}"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+kind: LibvirtCluster
+metadata:
+  name: "${CLUSTER_NAME}"
+  namespace: "${NAMESPACE}"
+spec:
+  # The libvirt connection URI the in-cluster controller uses to reach libvirtd.
+  # Examples: qemu:///system (local socket), qemu+tcp://host/system (no TLS; dev
+  # only), qemu+tls://host/system (TLS client certs via secretRef).
+  connectionURI: "${LIBVIRT_URI}"
+  # libvirt has no load balancer: klotho supplies a static endpoint (the
+  # address node zero will have on the NAT network), which the provider only
+  # validates.
+  controlPlaneEndpoint:
+    host: "${CONTROL_PLANE_ENDPOINT_HOST}"
+    port: 6443
+---
+apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+kind: KubeadmControlPlane
+metadata:
+  name: "${CLUSTER_NAME}-control-plane"
+  namespace: "${NAMESPACE}"
+spec:
+  replicas: ${CONTROL_PLANE_MACHINE_COUNT}
+  version: "${KUBERNETES_VERSION}"
+  machineTemplate:
+    spec:
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: LibvirtMachineTemplate
+        name: "${CLUSTER_NAME}-control-plane"
+  kubeadmConfigSpec:
+    clusterConfiguration: {}
+    initConfiguration:
+      nodeRegistration:
+        criSocket: unix:///var/run/containerd/containerd.sock
+        name: '{{ ds.meta_data.local_hostname }}'
+        # libvirt runs no cloud controller manager, so the kubelet must register
+        # its own provider ID. ds.meta_data.instance_id is the domain UUID
+        # (klotho seeds the NoCloud meta-data with it), so this matches the
+        # adopted LibvirtMachine's spec.providerID "libvirt://<host>/<uuid>" and
+        # the Machine<->Node nodeRef completes.
+        kubeletExtraArgs:
+        - name: provider-id
+          value: "libvirt://${LIBVIRT_HOST}/{{ ds.meta_data.instance_id }}"
+    joinConfiguration:
+      nodeRegistration:
+        criSocket: unix:///var/run/containerd/containerd.sock
+        name: '{{ ds.meta_data.local_hostname }}'
+        kubeletExtraArgs:
+        - name: provider-id
+          value: "libvirt://${LIBVIRT_HOST}/{{ ds.meta_data.instance_id }}"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+kind: LibvirtMachineTemplate
+metadata:
+  name: "${CLUSTER_NAME}-control-plane"
+  namespace: "${NAMESPACE}"
+spec:
+  template:
+    spec:
+      # Name of a cloud-init enabled qcow2 base image volume in the storage pool.
+      image: "${LIBVIRT_IMAGE}"
+      storagePool: "${LIBVIRT_POOL}"
+      network:
+        name: "${LIBVIRT_NETWORK}"
+        type: network
+      cpuCount: 2
+      memoryMiB: 4096

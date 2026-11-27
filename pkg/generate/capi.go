@@ -113,6 +113,8 @@ func DefaultInfraNamespace(provider string) string {
 	switch provider {
 	case "proxmox":
 		return "capmox-system"
+	case "libvirt":
+		return "capi-libvirt-system"
 	case "":
 		return ""
 	}

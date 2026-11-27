@@ -94,6 +94,20 @@ group/vnet/subnet, and an `AzureClusterIdentity` service principal. Build + unit
 **never run live** (no Azure credentials in the dev environment). See
 `provider/infrastructure/azure/TESTING.md`.
 
+### libvirt / KVM (CAPLV) — experimental
+Adopts node zero by name: klotho boots a `<cluster>-bootstrap` libvirt domain (a qcow2
+overlay of a base cloud image with a NoCloud cidata seed on a NAT network), and the
+Cluster API libvirt provider adopts it by `spec.domainName`. klotho reaches libvirtd
+directly over the connection URI (`qemu:///system`, `qemu+tcp`, `qemu+tls`) with the
+pure-Go [go-libvirt](https://github.com/digitalocean/go-libvirt) (no cgo). libvirt has no
+load balancer, so the endpoint is node zero's own address (`CONTROL_PLANE_ENDPOINT_HOST`),
+and `providerID` is `libvirt://<host>/<domain-uuid>`. Because libvirtd is reachable from
+outside, teardown is the clean external finisher — klotho's own `Teardown` destroys and
+undefines the domains and deletes the overlay/cidata volumes (the base image is untouched),
+so no deletion sidecar is needed. Build + unit green; **not run live here** (no libvirtd in
+the dev environment). See `provider/infrastructure/libvirt/TESTING.md` for a WSL2 nested-KVM
+runbook and a remote `qemu+tls` (Proxmox Linux VM) alternative.
+
 ### Apple Virtualization (CAPVZ) — scaffold
 See [cluster-api-provider-vz](https://github.com/klotho-k8s/cluster-api-provider-vz). A
 host-side gRPC daemon supervises one `capvz-runner` process per VM (launchd-managed), so
