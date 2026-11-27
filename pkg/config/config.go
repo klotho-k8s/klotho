@@ -101,8 +101,9 @@ const (
 	// installs for the hyperv provider. It is a pre-release; the controller
 	// image and release manifests are produced from
 	// luthermonson/cluster-api-provider-hyperv. v0.1.1 carries the CRD contract
-	// labels the operator needs to adopt the provider's objects.
-	DefaultHyperVVersion = "v0.1.1"
+	// labels the operator needs to adopt the provider's objects; v0.1.2 adds the
+	// atomic, disconnect-tolerant DeleteVM so a graceful delete leaves no orphan.
+	DefaultHyperVVersion = "v0.1.2"
 	// ProviderHyperV is the hyperv infrastructure provider's name, as
 	// clusterctl and --provider know it.
 	ProviderHyperV = "hyperv"
