@@ -76,6 +76,32 @@ func TestSetFirmwareScript(t *testing.T) {
 	}
 }
 
+func TestRemoveVMScript(t *testing.T) {
+	s := removeVMScript("lab-bootstrap")
+	// Regression: "$p:" is parsed by PowerShell as a drive-qualified variable
+	// reference (InvalidVariableReferenceWithDrive), which rejects the whole
+	// script at parse time so the VM's disk is never removed. The throw must
+	// delimit the variable as "${p}".
+	if strings.Contains(s, "$p:") {
+		t.Errorf("removeVMScript contains the drive-ambiguous \"$p:\"; use \"${p}\":\n%s", s)
+	}
+	if !strings.Contains(s, "${p}") {
+		t.Errorf("removeVMScript must delimit the disk variable as ${p}:\n%s", s)
+	}
+	// It must collect each disk's full chain (an automatic checkpoint's .avhdx
+	// plus the base .vhdx Remove-VM merges it into) before Remove-VM, or the
+	// merged base disk is orphaned.
+	for _, want := range []string{"Get-VHD", "ParentPath", "Get-VMHardDiskDrive", "Remove-VM -Name 'lab-bootstrap' -Force"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("removeVMScript missing %q in:\n%s", want, s)
+		}
+	}
+	// The lock-race retry loop must survive.
+	if !strings.Contains(s, "Start-Sleep -Milliseconds 500") || !strings.Contains(s, "Remove-Item -LiteralPath $p -Force -ErrorAction Stop") {
+		t.Errorf("removeVMScript lost its retry-on-lock loop:\n%s", s)
+	}
+}
+
 func TestNormalizeState(t *testing.T) {
 	for in, want := range map[string]string{`"Running"`: StateRunning, `2`: StateRunning, `3`: StateOff, `"Off"`: StateOff} {
 		if got := normalizeState([]byte(in)); got != want {

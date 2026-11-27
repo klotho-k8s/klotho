@@ -137,28 +137,53 @@ func stopVMScript(name string, turnOff bool) string {
 // removeVMScript stops and deletes the VM and its disks; a missing VM is a
 // no-op.
 //
-// A just force-stopped VM's disk stays locked by its worker process (vmwp.exe)
-// for a brief window after Remove-VM returns, so deleting the VHDX immediately
-// races that handle. A bare "Remove-Item -Force" loses that race as a
-// non-terminating error, which the invocation swallows: the VM unregisters but
-// its multi-GB disk is left behind as a silent orphan. Retry the delete until
-// the handle is released, and throw if it never is, so the orphan surfaces as a
-// delete failure instead of silently accumulating on disk.
+// It must leave no disk behind. Two traps make that non-trivial:
+//
+//   - A just force-stopped VM's disk stays locked by its worker process
+//     (vmwp.exe) for a brief window after Remove-VM returns, so deleting the
+//     VHDX immediately races that handle. A bare "Remove-Item -Force" loses that
+//     race as a non-terminating error, which the invocation swallows: the VM
+//     unregisters but its multi-GB disk is left behind as a silent orphan. We
+//     retry the delete until the handle is released, and throw if it never is,
+//     so the orphan surfaces as a delete failure instead of accumulating.
+//   - Hyper-V takes an automatic checkpoint when the VM starts, so the attached
+//     disk is a differencing .avhdx over the base .vhdx. Remove-VM merges that
+//     checkpoint back into the base and deletes the .avhdx, so collecting only
+//     the attached leaf (Get-VMHardDiskDrive.Path) would delete a file that is
+//     already gone and orphan the merged base disk. We therefore walk each
+//     attached disk's full chain (leaf plus parents) BEFORE Remove-VM.
+//
+// The chain walk is scoped to each leaf disk's own directory: a parent that
+// lives elsewhere - the shared golden base image every VM is copied from - is
+// never collected and so never deleted. (The provider copies the base into a
+// standalone disk, so in practice the chain stays inside the VM's own folder.)
 func removeVMScript(name string) string {
+	q := psQuote(name)
 	var b strings.Builder
-	b.WriteString("$vm = Get-VM -Name " + psQuote(name) + " -ErrorAction SilentlyContinue\n")
+	b.WriteString("$vm = Get-VM -Name " + q + " -ErrorAction SilentlyContinue\n")
 	b.WriteString("if ($vm) {\n")
-	b.WriteString("  if ($vm.State -ne 'Off') { Stop-VM -Name " + psQuote(name) + " -TurnOff -Force }\n")
-	b.WriteString("  $disks = (Get-VMHardDiskDrive -VMName " + psQuote(name) + ").Path\n")
-	b.WriteString("  Remove-VM -Name " + psQuote(name) + " -Force\n")
-	b.WriteString("  foreach ($p in $disks) {\n")
+	b.WriteString("  if ($vm.State -ne 'Off') { Stop-VM -Name " + q + " -TurnOff -Force }\n")
+	b.WriteString("  $paths = New-Object System.Collections.Generic.List[string]\n")
+	b.WriteString("  foreach ($d in (Get-VMHardDiskDrive -VMName " + q + ")) {\n")
+	b.WriteString("    $leaf = $d.Path\n")
+	b.WriteString("    if (-not $leaf) { continue }\n")
+	b.WriteString("    $dir = Split-Path -Parent $leaf\n")
+	b.WriteString("    $cur = $leaf\n")
+	b.WriteString("    while ($cur) {\n")
+	b.WriteString("      if ((Split-Path -Parent $cur) -eq $dir) { $paths.Add($cur) }\n")
+	b.WriteString("      $vhd = Get-VHD -Path $cur -ErrorAction SilentlyContinue\n")
+	b.WriteString("      if ($vhd -and $vhd.ParentPath) { $cur = $vhd.ParentPath } else { $cur = $null }\n")
+	b.WriteString("    }\n")
+	b.WriteString("  }\n")
+	b.WriteString("  Remove-VM -Name " + q + " -Force\n")
+	b.WriteString("  foreach ($p in $paths) {\n")
 	b.WriteString("    if ($p -and (Test-Path -LiteralPath $p)) {\n")
 	b.WriteString("      $removed = $false\n")
 	b.WriteString("      for ($i = 0; $i -lt 20; $i++) {\n")
 	b.WriteString("        try { Remove-Item -LiteralPath $p -Force -ErrorAction Stop; $removed = $true; break }\n")
 	b.WriteString("        catch { Start-Sleep -Milliseconds 500 }\n")
 	b.WriteString("      }\n")
-	b.WriteString("      if (-not $removed) { throw \"failed to remove disk $p: still locked after the VM was stopped\" }\n")
+	b.WriteString("      if (-not $removed) { throw \"failed to remove disk ${p}: still locked after the VM was stopped\" }\n")
 	b.WriteString("    }\n")
 	b.WriteString("  }\n")
 	b.WriteString("}")
