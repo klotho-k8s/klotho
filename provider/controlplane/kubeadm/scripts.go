@@ -210,6 +210,37 @@ func usersScript(users []bootstrapv1.User) []byte {
 	return []byte(b.String())
 }
 
+// endpointFixScript runs before kubeadm init. kubeadm init's post-control-plane
+// phases (addons: kube-proxy and CoreDNS; the admin and kubelet-api RBAC) reach
+// the API server through the admin kubeconfig, whose server is
+// controlPlaneEndpoint. When that endpoint is not an address this node holds --
+// a DHCP-addressed node (e.g. Hyper-V) whose endpoint could only be a
+// placeholder before boot -- those phases fail silently and leave the cluster
+// without kube-proxy, CoreDNS and the cluster-admin RBAC, which breaks the CNI
+// and every later step. Pointing controlPlaneEndpoint at this node's primary
+// IPv4, which kubeadm also includes in the API server certificate SANs, makes
+// every init phase reach the local API server so the cluster comes up complete.
+// A control-plane endpoint that is already an address on this node (a static
+// address or a claimed VIP) is left unchanged.
+const endpointFixScript = `#!/bin/bash
+set -euo pipefail
+cfg=/run/kubeadm/kubeadm.yaml
+[ -f "$cfg" ] || exit 0
+line="$(grep -E '^[[:space:]]*controlPlaneEndpoint:' "$cfg" | head -1 || true)"
+[ -n "$line" ] || exit 0
+value="$(printf '%s' "$line" | sed -E 's#^[[:space:]]*controlPlaneEndpoint:[[:space:]]*##; s#^"##; s#"$##')"
+host="$(printf '%s' "$value" | sed -E 's#:[0-9]+$##')"
+port="$(printf '%s' "$value" | sed -nE 's#.*:([0-9]+)$#\1#p')"
+[ -n "$port" ] || port=6443
+if [ -n "$host" ] && ! ip -4 -o addr show 2>/dev/null | grep -Fqw "$host"; then
+  node_ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i == "src") {print $(i + 1); exit}}')"
+  if [ -n "$node_ip" ]; then
+    sed -i -E "s#^([[:space:]]*controlPlaneEndpoint:[[:space:]]*).*#\1${node_ip}:${port}#" "$cfg"
+    echo "endpoint-fix: controlPlaneEndpoint ${host} is not an address on this node; set to ${node_ip}:${port}" >&2
+  fi
+fi
+`
+
 var postInitTemplate = template.Must(template.New("post-init").Parse(`#!/bin/bash
 # Runs once kubeadm init has returned. Every step is safe to repeat and waits
 # for what the next step needs.
@@ -218,7 +249,37 @@ set -euo pipefail
 export KUBECONFIG={{ .Kubeconfig }}
 SERVER={{ .Server }}
 
+# kubeadm 1.29+ binds admin.conf to the kubeadm:cluster-admins group through a
+# ClusterRoleBinding created by the init RBAC phase; when that phase has not run
+# the admin user is unprivileged ("User kubernetes-admin cannot ... Forbidden").
+# super-admin.conf is bound directly to system:masters and always has full
+# access, so prefer it for the cluster-admin steps below (applying the CNI,
+# cert-manager, the operator and the seed manifests).
+if [ -f /etc/kubernetes/super-admin.conf ]; then
+  export KUBECONFIG=/etc/kubernetes/super-admin.conf
+fi
+
 log() { echo "post-init: $*" >&2; }
+
+# post-init runs on the freshly kubeadm-init'd control-plane node, so its API
+# server is always reachable locally. The rendered endpoint may be an address
+# this node does not hold: on a DHCP-addressed Hyper-V node the control-plane
+# endpoint could only be a placeholder before boot. When the endpoint is not an
+# address on this node, target this node's primary IPv4 instead, which kubeadm
+# includes in the API server certificate SANs, and rewrite the admin kubeconfig
+# server to match so every kubectl below (which reads KUBECONFIG, not SERVER)
+# reaches the local API server, not the unreachable placeholder.
+endpoint_host="$(printf '%s' "$SERVER" | sed -E 's#^[a-z]+://##; s#:[0-9]+$##')"
+if [ -z "$endpoint_host" ] || ! ip -4 -o addr show 2>/dev/null | grep -Fqw "$endpoint_host"; then
+  node_ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i == "src") {print $(i + 1); exit}}')"
+  if [ -n "$node_ip" ]; then
+    log "control-plane endpoint ${endpoint_host:-unset} is not an address on this node; using this node's primary IPv4 $node_ip"
+    SERVER="https://${node_ip}:6443"
+    if [ -f "$KUBECONFIG" ]; then
+      sed -i -E "s#^(\s*server: ).*#\1${SERVER}#" "$KUBECONFIG" || true
+    fi
+  fi
+fi
 
 # retry ATTEMPTS DELAY COMMAND...
 retry() {
@@ -253,7 +314,11 @@ log "waiting for the API server at $SERVER"
 retry 120 5 api_ready
 
 log "applying the CNI"
-retry 30 10 kubectl apply -f {{ .CNI }}
+# Server-side apply: the CNI and cert-manager manifests carry CRDs whose schema
+# exceeds the 262144-byte limit kubectl's client-side last-applied annotation
+# imposes, so a plain "kubectl apply -f" fails with "metadata.annotations: Too
+# long" on those CRDs (e.g. Calico's IPPool), leaving the CNI unable to start.
+retry 30 10 kubectl apply --server-side --force-conflicts -f {{ .CNI }}
 retry 60 10 kubectl wait --for=condition=Ready nodes --all --timeout=10s
 
 # With an external cloud provider (AWS's cloud-provider=external) the kubelet
@@ -267,7 +332,7 @@ log "clearing the cloud-provider uninitialized taint for bootstrap"
 kubectl taint nodes --all node.cloudprovider.kubernetes.io/uninitialized:NoSchedule- 2>/dev/null || true
 
 log "applying cert-manager"
-retry 30 10 kubectl apply -f {{ .CertManager }}
+retry 30 10 kubectl apply --server-side --force-conflicts -f {{ .CertManager }}
 # cert-manager's manifest tolerates no taints, and until a worker joins the
 # only node is a tainted control plane. The node's taints stay as configured.
 tolerate_control_plane() {

@@ -93,6 +93,12 @@ func newDeleteCommand() *cli.Command {
 			}
 			_ = os.Remove(filepath.Join(a.cfg.CredentialsDir(), name+".json"))
 			_, _ = fmt.Fprintf(stdout(c), "deleted %s\n", name)
+			// The Hyper-V host agent is shared across every klotho Hyper-V
+			// cluster on this host; the delete above never touched it. Note that
+			// it was left running, and whether other clusters still need it.
+			if st.Spec.Provider == providerHyperv {
+				noteHyperVDaemonAfterDelete(ctx, stdout(c), a.deps())
+			}
 			return nil
 		},
 	}

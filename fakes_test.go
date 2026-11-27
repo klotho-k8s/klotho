@@ -133,10 +133,14 @@ type fakeInfra struct {
 	// of one resource, so a watched delete can drain to empty.
 	planSeq []int
 	planIdx int
+	// untagged makes the provider report UntaggedMachineTemplate, so klotho
+	// skips adding spec.template.spec.tags to the generated bundle.
+	untagged bool
 }
 
 func (f *fakeInfra) Name() string                                               { return "fake" }
 func (f *fakeInfra) Tag(name string) string                                     { return "klotho-" + name }
+func (f *fakeInfra) UntaggedMachineTemplate() bool                              { return f.untagged }
 func (f *fakeInfra) err(op string) error                                        { return f.fail[op] }
 func (f *fakeInfra) Discover(context.Context) (infrastructure.Inventory, error) { return nil, nil }
 

@@ -139,6 +139,13 @@ func deleteViaClusterAPI(ctx context.Context, deps Deps, name string, st *cluste
 				return fmt.Errorf("removing payload of %s: %w", name, err)
 			}
 		}
+		// Clear the state record now that the deletion is under way. The Cluster
+		// API (and any detached sidecar) finishes the teardown on its own; the
+		// record must not linger in `klotho list` after a fire-and-forget delete.
+		if err := deps.Store.Delete(ctx, name); err != nil {
+			return fmt.Errorf("removing record of %s: %w", name, err)
+		}
+		log.Info("deleted")
 		return nil
 	}
 

@@ -98,6 +98,18 @@ const (
 	// ProviderAzure is the azure infrastructure provider's name, as clusterctl
 	// and --provider know it.
 	ProviderAzure = "azure"
+	// DefaultHyperVVersion is the Cluster API Hyper-V provider release klotho
+	// installs for the hyperv provider. It is a pre-release; the controller
+	// image and release manifests are produced from
+	// klotho-k8s/cluster-api-provider-hyperv. v0.1.1 carries the CRD contract
+	// labels the operator needs to adopt the provider's objects; v0.1.2 adds the
+	// atomic, disconnect-tolerant DeleteVM so a graceful delete leaves no orphan;
+	// v0.1.3 wires the HYPERV_AGENT_* env into the controller and reads the agent
+	// CA inline, so the manager runs as a Linux pod driving the host agent.
+	DefaultHyperVVersion = "v0.1.3"
+	// ProviderHyperV is the hyperv infrastructure provider's name, as
+	// clusterctl and --provider know it.
+	ProviderHyperV = "hyperv"
 	// FileName is the configuration file's name inside the config directory.
 	FileName = "config.yaml"
 	// IdentityFileName is the default age identity file's name inside the
@@ -144,6 +156,7 @@ type Config struct {
 	GCP               GCP        `json:"gcp,omitempty"`
 	Azure             Azure      `json:"azure,omitempty"`
 	Docker            Docker     `json:"docker,omitempty"`
+	Hyperv            Hyperv     `json:"hyperv,omitempty"`
 	CAPI              CAPI       `json:"capi,omitempty"`
 	// Nodes configures what every node of a generated cluster does at boot.
 	Nodes Nodes `json:"nodes,omitempty"`
@@ -385,6 +398,102 @@ type Docker struct {
 	// must carry a Docker-API-compatible CLI and a POSIX shell. Empty means the
 	// default (the official docker CLI image).
 	CleanupImage string `json:"cleanupImage,omitempty"`
+}
+
+// Hyperv holds the Microsoft Hyper-V provider settings for local development
+// clusters. klotho runs on the Windows host and shells to PowerShell. The
+// Cluster API Hyper-V provider is development-oriented, not for production.
+type Hyperv struct {
+	// Switch is the virtual switch the bootstrap VM joins. Empty means the
+	// HYPERV_SWITCH_NAME variable, then "Default Switch".
+	Switch string `json:"switch,omitempty"`
+	// Image is the path to the cloud-init-ready base Linux VHDX the bootstrap
+	// VM's disk is copied from. Empty means the HYPERV_IMAGE_PATH variable.
+	Image string `json:"image,omitempty"`
+	// VMPath is the directory VM disks are written under. Empty means the
+	// host default.
+	VMPath string `json:"vmPath,omitempty"`
+	// ISODir is where the NoCloud cidata ISO is written. Empty means VMPath.
+	ISODir string `json:"isoDir,omitempty"`
+	// MemoryMiB and CPUs size the bootstrap VM. Zero means 4096 and 2.
+	MemoryMiB int `json:"memoryMiB,omitempty"`
+	CPUs      int `json:"cpus,omitempty"`
+	// EndpointHost is the static control plane endpoint address; Hyper-V has
+	// no load balancer. Empty means the CONTROL_PLANE_ENDPOINT_HOST variable.
+	EndpointHost string `json:"endpointHost,omitempty"`
+	// SecureBoot enables UEFI Secure Boot. Default false, since stock Linux
+	// VHDX images are not signed for the Microsoft UEFI CA.
+	SecureBoot bool `json:"secureBoot,omitempty"`
+
+	// --- in-cluster Hyper-V agent (gRPC daemon) settings ---
+	//
+	// klotho boots node zero host-side over local PowerShell (the fields
+	// above). The in-cluster Cluster API Hyper-V controller cannot shell to
+	// the host, so it reaches a gRPC agent (hyperv-agent) running on the
+	// Windows host over the network. These fields are handed to that
+	// controller through the operator's configSecret as HYPERV_AGENT_ENDPOINT,
+	// HYPERV_AGENT_CA and HYPERV_AGENT_TOKEN. On Windows, "klotho create"
+	// detects a running hyperv-agent service and fills any of these left empty.
+
+	// AgentEndpoint is the agent's "host:port" (for example
+	// "172.30.32.1:7443"). Empty means the HYPERV_AGENT_ENDPOINT variable.
+	AgentEndpoint string `json:"agentEndpoint,omitempty"`
+	// AgentCA is the agent's CA certificate as inline PEM; it wins over
+	// AgentCAFile. Empty means read AgentCAFile.
+	AgentCA string `json:"agentCa,omitempty"`
+	// AgentCAFile is the path to the agent's CA certificate on this host (for
+	// example C:\ProgramData\hyperv-agent\agent.crt).
+	AgentCAFile string `json:"agentCaFile,omitempty"`
+	// AgentToken is the bearer token the controller presents; it wins over
+	// AgentTokenFile. Empty means read AgentTokenFile.
+	AgentToken string `json:"agentToken,omitempty"`
+	// AgentTokenFile is the path to a file holding the agent token.
+	AgentTokenFile string `json:"agentTokenFile,omitempty"`
+	// AgentBinary is a path or URL the agent executable is sourced from when
+	// "klotho create" or "klotho hyperv-agent install" installs the service.
+	// Empty means download the provider's release asset.
+	AgentBinary string `json:"agentBinary,omitempty"`
+}
+
+// ResolvedAgentEndpoint returns the agent endpoint from config, then the
+// HYPERV_AGENT_ENDPOINT environment variable.
+func (h Hyperv) ResolvedAgentEndpoint() string {
+	if h.AgentEndpoint != "" {
+		return h.AgentEndpoint
+	}
+	return os.Getenv("HYPERV_AGENT_ENDPOINT")
+}
+
+// ResolvedAgentCA returns the agent CA PEM: inline AgentCA, then the contents
+// of AgentCAFile, then the HYPERV_AGENT_CA environment variable.
+func (h Hyperv) ResolvedAgentCA() (string, error) {
+	if h.AgentCA != "" {
+		return h.AgentCA, nil
+	}
+	if h.AgentCAFile != "" {
+		b, err := os.ReadFile(Expand(h.AgentCAFile))
+		if err != nil {
+			return "", fmt.Errorf("hyperv.agentCaFile: %w", err)
+		}
+		return string(b), nil
+	}
+	return os.Getenv("HYPERV_AGENT_CA"), nil
+}
+
+// ResolvedAgentToken returns the agent token: inline AgentToken, then the
+// contents of AgentTokenFile, then the HYPERV_AGENT_TOKEN environment variable.
+func (h Hyperv) ResolvedAgentToken() (string, error) {
+	if h.AgentToken != "" {
+		return h.AgentToken, nil
+	}
+	if h.AgentTokenFile != "" {
+		b, err := os.ReadFile(Expand(h.AgentTokenFile))
+		if err != nil {
+			return "", fmt.Errorf("hyperv.agentTokenFile: %w", err)
+		}
+		return strings.TrimSpace(string(b)), nil
+	}
+	return os.Getenv("HYPERV_AGENT_TOKEN"), nil
 }
 
 // Proxmox holds the Proxmox VE connection and placement settings.
@@ -1088,6 +1197,13 @@ func (c *Config) applyDefaults() {
 		azure.Version = DefaultAzureVersion
 	}
 	c.Providers[ProviderAzure] = azure
+	hv := c.Providers[ProviderHyperV]
+	if hv.Version == "" {
+		hv.Version = DefaultHyperVVersion
+	}
+	c.Providers[ProviderHyperV] = hv
+	c.Hyperv.AgentCAFile = Expand(c.Hyperv.AgentCAFile)
+	c.Hyperv.AgentTokenFile = Expand(c.Hyperv.AgentTokenFile)
 	if c.Variables == nil {
 		c.Variables = map[string]string{}
 	}

@@ -59,6 +59,7 @@ func New(info BuildInfo) *cli.Command {
 			newStateCommand(),
 			newCredentialCommand(),
 			newProbeCommand(),
+			newHyperVAgentCommand(),
 			newVersionCommand(info),
 		},
 	}

@@ -103,3 +103,18 @@ type UserDataLimiter interface {
 type DeletionSidecar interface {
 	LaunchDeletionSidecar(ctx context.Context, state *cluster.State) error
 }
+
+// EndpointFromBootstrap is implemented by an infrastructure provider whose
+// control plane endpoint is the bootstrap node itself, at an address not known
+// until the node boots. Hyper-V is the case: it has no load balancer and the
+// node takes a DHCP address from the virtual switch, so Prepare can only pin a
+// placeholder endpoint. After Launch, once the node's real address is known,
+// Create calls EndpointFromBootstrap; if it returns a non-empty host, Create
+// retargets the control plane endpoint and the admin kubeconfig at that host so
+// the converge phase reaches the API server kubeadm brings up (the node's own
+// IP is always in the apiserver certificate's SANs). A provider whose endpoint
+// is a stable address it allocated or validated does not implement it, and the
+// prepared endpoint stands.
+type EndpointFromBootstrap interface {
+	EndpointFromBootstrap(node *cluster.Node) string
+}

@@ -1,0 +1,159 @@
+# klotho flat Hyper-V (Cluster API Hyper-V provider) cluster template.
+#
+# It is authored in the Cluster API v1beta2 contract (object references use
+# apiGroup, not apiVersion), which is what klotho's generator requires. The
+# Hyper-V infrastructure objects are v1alpha1, the provider's own version.
+#
+# klotho fills CLUSTER_NAME, NAMESPACE, KUBERNETES_VERSION,
+# CONTROL_PLANE_MACHINE_COUNT and WORKER_MACHINE_COUNT itself, and the Hyper-V
+# provider's Prepare fills CONTROL_PLANE_ENDPOINT_HOST (node zero's Default
+# Switch address, since Hyper-V has no load balancer), HYPERV_SWITCH_NAME and
+# HYPERV_IMAGE_PATH. Nothing else needs to be supplied.
+#
+# The base VHDX is a stock Debian 12 genericcloud image (cloud-init/NoCloud)
+# with NO Kubernetes, so a cluster off this template must install containerd
+# and the KUBERNETES_VERSION of kubeadm/kubelet/kubectl on every node before
+# kubeadm runs. klotho does that with its install-at-boot feature:
+# "klotho create --install-kubernetes" (or nodes.installKubernetes: true in the
+# configuration) prepends the containerd + pkgs.k8s.io install to every node's
+# preKubeadmCommands after template processing. The install script uses shell
+# variables that must not be seen by clusterctl's dollar-brace substitution,
+# which is why klotho injects it rather than this template carrying it inline.
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: "${CLUSTER_NAME}"
+  namespace: "${NAMESPACE}"
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks:
+      - 192.168.0.0/16
+  controlPlaneRef:
+    apiGroup: controlplane.cluster.x-k8s.io
+    kind: KubeadmControlPlane
+    name: "${CLUSTER_NAME}-control-plane"
+  infrastructureRef:
+    apiGroup: infrastructure.cluster.x-k8s.io
+    kind: HyperVCluster
+    name: "${CLUSTER_NAME}"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+kind: HyperVCluster
+metadata:
+  name: "${CLUSTER_NAME}"
+  namespace: "${NAMESPACE}"
+spec:
+  # Hyper-V has no load balancer: klotho supplies a static endpoint (node
+  # zero's Default Switch IP), which the provider only validates.
+  controlPlaneEndpoint:
+    host: "${CONTROL_PLANE_ENDPOINT_HOST}"
+    port: 6443
+---
+apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+kind: KubeadmControlPlane
+metadata:
+  name: "${CLUSTER_NAME}-control-plane"
+  namespace: "${NAMESPACE}"
+spec:
+  kubeadmConfigSpec:
+    initConfiguration:
+      nodeRegistration:
+        criSocket: unix:///var/run/containerd/containerd.sock
+        name: '{{ ds.meta_data.local_hostname }}'
+        # Hyper-V runs no cloud controller manager, so the kubelet must register
+        # its own provider ID. ds.meta_data.instance_id is the VM's GUID (klotho
+        # seeds the NoCloud meta-data with it), so this matches the adopted
+        # HyperVMachine's spec.providerID "hyperv://<guid>" and the Machine↔Node
+        # nodeRef completes.
+        kubeletExtraArgs:
+        - name: provider-id
+          value: "hyperv://'{{ ds.meta_data.instance_id }}'"
+    joinConfiguration:
+      nodeRegistration:
+        criSocket: unix:///var/run/containerd/containerd.sock
+        name: '{{ ds.meta_data.local_hostname }}'
+        kubeletExtraArgs:
+        - name: provider-id
+          value: "hyperv://'{{ ds.meta_data.instance_id }}'"
+  machineTemplate:
+    spec:
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: HyperVMachineTemplate
+        name: "${CLUSTER_NAME}-control-plane"
+  replicas: ${CONTROL_PLANE_MACHINE_COUNT}
+  version: "${KUBERNETES_VERSION}"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+kind: HyperVMachineTemplate
+metadata:
+  name: "${CLUSTER_NAME}-control-plane"
+  namespace: "${NAMESPACE}"
+spec:
+  template:
+    spec:
+      image: '${HYPERV_IMAGE_PATH}'
+      switchName: '${HYPERV_SWITCH_NAME}'
+      generation: 2
+      cpuCount: 2
+      memoryMiB: 4096
+      enableSecureBoot: false
+---
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: MachineDeployment
+metadata:
+  name: "${CLUSTER_NAME}-md-0"
+  namespace: "${NAMESPACE}"
+spec:
+  clusterName: "${CLUSTER_NAME}"
+  replicas: ${WORKER_MACHINE_COUNT}
+  selector:
+    matchLabels: null
+  template:
+    spec:
+      bootstrap:
+        configRef:
+          apiGroup: bootstrap.cluster.x-k8s.io
+          kind: KubeadmConfigTemplate
+          name: "${CLUSTER_NAME}-md-0"
+      clusterName: "${CLUSTER_NAME}"
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: HyperVMachineTemplate
+        name: "${CLUSTER_NAME}-md-0"
+      version: "${KUBERNETES_VERSION}"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+kind: HyperVMachineTemplate
+metadata:
+  name: "${CLUSTER_NAME}-md-0"
+  namespace: "${NAMESPACE}"
+spec:
+  template:
+    spec:
+      image: '${HYPERV_IMAGE_PATH}'
+      switchName: '${HYPERV_SWITCH_NAME}'
+      generation: 2
+      cpuCount: 2
+      memoryMiB: 4096
+      enableSecureBoot: false
+---
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+kind: KubeadmConfigTemplate
+metadata:
+  name: "${CLUSTER_NAME}-md-0"
+  namespace: "${NAMESPACE}"
+spec:
+  template:
+    spec:
+      joinConfiguration:
+        nodeRegistration:
+          criSocket: unix:///var/run/containerd/containerd.sock
+          name: '{{ ds.meta_data.local_hostname }}'
+          # The in-cluster Cluster API Hyper-V controller seeds each worker's
+          # NoCloud meta-data instance-id with that VM's GUID, so this matches
+          # the worker HyperVMachine's "hyperv://<guid>" provider ID.
+          kubeletExtraArgs:
+          - name: provider-id
+            value: "hyperv://'{{ ds.meta_data.instance_id }}'"

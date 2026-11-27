@@ -28,6 +28,65 @@ func isolate(t *testing.T) string {
 	return dir
 }
 
+func TestHyperVProviderDefaultVersion(t *testing.T) {
+	isolate(t)
+	c, err := Load("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Providers[ProviderHyperV].Version != DefaultHyperVVersion {
+		t.Errorf("hyperv version = %q, want %q", c.Providers[ProviderHyperV].Version, DefaultHyperVVersion)
+	}
+}
+
+func TestHypervResolvedAgent(t *testing.T) {
+	dir := t.TempDir()
+	caFile := filepath.Join(dir, "ca.crt")
+	tokFile := filepath.Join(dir, "tok")
+	if err := os.WriteFile(caFile, []byte("PEM"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tokFile, []byte(" tok \n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Inline values win over files.
+	h := Hyperv{AgentEndpoint: "e:1", AgentCA: "inline-ca", AgentCAFile: caFile, AgentToken: "inline-tok", AgentTokenFile: tokFile}
+	if got := h.ResolvedAgentEndpoint(); got != "e:1" {
+		t.Errorf("endpoint = %q", got)
+	}
+	if ca, _ := h.ResolvedAgentCA(); ca != "inline-ca" {
+		t.Errorf("ca = %q", ca)
+	}
+	if tok, _ := h.ResolvedAgentToken(); tok != "inline-tok" {
+		t.Errorf("token = %q", tok)
+	}
+
+	// Files are read and the token trimmed when no inline value is set.
+	h = Hyperv{AgentCAFile: caFile, AgentTokenFile: tokFile}
+	if ca, err := h.ResolvedAgentCA(); err != nil || ca != "PEM" {
+		t.Errorf("ca file = %q err %v", ca, err)
+	}
+	if tok, err := h.ResolvedAgentToken(); err != nil || tok != "tok" {
+		t.Errorf("token file = %q err %v", tok, err)
+	}
+
+	// Environment is the final fallback.
+	t.Setenv("HYPERV_AGENT_ENDPOINT", "env:2")
+	t.Setenv("HYPERV_AGENT_CA", "env-ca")
+	t.Setenv("HYPERV_AGENT_TOKEN", "env-tok")
+	empty := Hyperv{}
+	if got := empty.ResolvedAgentEndpoint(); got != "env:2" {
+		t.Errorf("env endpoint = %q", got)
+	}
+	if ca, _ := empty.ResolvedAgentCA(); ca != "env-ca" {
+		t.Errorf("env ca = %q", ca)
+	}
+	if tok, _ := empty.ResolvedAgentToken(); tok != "env-tok" {
+		t.Errorf("env token = %q", tok)
+	}
+}
+
 func writeConfig(t *testing.T, body string) string {
 	t.Helper()
 	p := DefaultPath()
