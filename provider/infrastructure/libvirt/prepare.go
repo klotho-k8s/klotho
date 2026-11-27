@@ -30,6 +30,14 @@ func (p *Provider) Prepare(ctx context.Context, spec *cluster.Spec) (*infrastruc
 	if r.NetworkType != "network" && r.NetworkType != "bridge" {
 		return nil, errorf("network type %q is not one of network, bridge", r.NetworkType)
 	}
+	// The in-cluster controller reaches libvirtd over the connection URI klotho
+	// injects (LIBVIRT_URI -> LibvirtCluster.spec.connectionURI). A local-socket
+	// URI is unreachable from a pod, so the controller needs a network URI even
+	// when klotho the CLI dials a local socket. Block with a clear finding
+	// rather than hand the controller an unreachable qemu:///system.
+	if localSocketURI(r.ControllerURI) {
+		return nil, errorf("the in-cluster libvirt controller cannot reach the local-socket URI %q; set libvirt.controllerURI (or libvirt.uri) to a qemu+tcp:// or qemu+tls:// URL the controller pods can reach (klotho the CLI may still dial the local socket via libvirt.uri)", r.ControllerURI)
+	}
 
 	pools, err := p.client.ListStoragePools(ctx)
 	if err != nil {
@@ -63,7 +71,7 @@ func (p *Provider) Prepare(ctx context.Context, spec *cluster.Spec) (*infrastruc
 	return &infrastructure.Prepared{
 		Endpoint: cluster.Endpoint{Host: r.EndpointHost, Port: DefaultPort},
 		Variables: map[string]string{
-			VarURI:          r.URI,
+			VarURI:          r.ControllerURI,
 			VarLibvirtHost:  r.Host,
 			VarEndpointHost: r.EndpointHost,
 			VarImage:        r.Image,

@@ -107,11 +107,21 @@ var _ infrastructure.Provider = (*Provider)(nil)
 // Config configures the provider. A zero field falls back to the cluster's
 // template variables and then to a default.
 type Config struct {
-	// URI is the libvirt connection URI klotho dials, for example
+	// URI is the libvirt connection URI klotho the CLI dials, for example
 	// "qemu:///system" (a local socket), "qemu+tcp://host/system" or
-	// "qemu+tls://host/system". Empty means the LIBVIRT_URI variable, then
-	// "qemu:///system".
+	// "qemu+tls://host/system". Empty means "qemu:///system".
 	URI string
+	// ControllerURI is the connection URI the in-cluster Cluster API libvirt
+	// controller uses to reach the same libvirtd. It MUST be a network URI the
+	// controller pods can reach (qemu+tcp:// or qemu+tls://): a local-socket URI
+	// such as "qemu:///system" is unreachable from a pod. Empty falls back to
+	// URI, which then must itself be a network URI. The host part of this URI is
+	// what provider IDs ("libvirt://<host>/<uuid>") are built from, since it is
+	// what the controller derives when it sets each LibvirtMachine's providerID
+	// and what the kubelet registers as LIBVIRT_HOST - so klotho the CLI can
+	// dial a local socket (URI) while the controller, the kubelet and klotho's
+	// own provider IDs all agree on the network host of ControllerURI.
+	ControllerURI string
 	// StoragePool holds the base image and receives the per-domain overlay and
 	// the cidata seed. Empty means the LIBVIRT_POOL variable, then
 	// DefaultStoragePool.
@@ -195,16 +205,17 @@ func errorf(format string, args ...any) error {
 
 // resolved gathers the config-or-variable-or-default values a run needs.
 type resolved struct {
-	URI          string
-	Host         string
-	StoragePool  string
-	Image        string
-	Network      string
-	NetworkType  string
-	MemoryMiB    int
-	CPUs         int
-	DiskGiB      int
-	EndpointHost string
+	URI           string
+	ControllerURI string
+	Host          string
+	StoragePool   string
+	Image         string
+	Network       string
+	NetworkType   string
+	MemoryMiB     int
+	CPUs          int
+	DiskGiB       int
+	EndpointHost  string
 }
 
 // resolve fills a resolved from the config, the spec's variables, and
@@ -217,17 +228,18 @@ func (p *Provider) resolve(vars map[string]string) resolved {
 		return strings.TrimSpace(vars[varName])
 	}
 	r := resolved{
-		URI:          resolveURI(p.cfg),
-		StoragePool:  get(p.cfg.StoragePool, VarPool),
-		Image:        get(p.cfg.Image, VarImage),
-		Network:      get(p.cfg.Network, VarNetwork),
-		NetworkType:  p.cfg.NetworkType,
-		MemoryMiB:    p.cfg.MemoryMiB,
-		CPUs:         p.cfg.CPUs,
-		DiskGiB:      p.cfg.DiskGiB,
-		EndpointHost: get(p.cfg.EndpointHost, VarEndpointHost),
+		URI:           resolveURI(p.cfg),
+		ControllerURI: ControllerURI(p.cfg),
+		StoragePool:   get(p.cfg.StoragePool, VarPool),
+		Image:         get(p.cfg.Image, VarImage),
+		Network:       get(p.cfg.Network, VarNetwork),
+		NetworkType:   p.cfg.NetworkType,
+		MemoryMiB:     p.cfg.MemoryMiB,
+		CPUs:          p.cfg.CPUs,
+		DiskGiB:       p.cfg.DiskGiB,
+		EndpointHost:  get(p.cfg.EndpointHost, VarEndpointHost),
 	}
-	r.Host = HostFromURI(r.URI)
+	r.Host = HostFromURI(r.ControllerURI)
 	if r.StoragePool == "" {
 		r.StoragePool = DefaultStoragePool
 	}
@@ -246,11 +258,39 @@ func (p *Provider) resolve(vars map[string]string) resolved {
 	return r
 }
 
-// resolveURI returns the connection URI from config, else the local system
-// socket.
+// resolveURI returns the connection URI klotho the CLI dials from config, else
+// the local system socket.
 func resolveURI(cfg Config) string {
 	if cfg.URI != "" {
 		return cfg.URI
 	}
 	return "qemu:///system"
+}
+
+// ControllerURI returns the connection URI the in-cluster Cluster API libvirt
+// controller uses: cfg.ControllerURI when set, else the host dial URI (which
+// then must itself be reachable from the controller pods). klotho the CLI dials
+// resolveURI(cfg); only the controller - and provider IDs - use this one.
+func ControllerURI(cfg Config) string {
+	if u := strings.TrimSpace(cfg.ControllerURI); u != "" {
+		return u
+	}
+	return resolveURI(cfg)
+}
+
+// idHost is the host recorded in provider IDs: the host of the controller
+// connection URI. It must match the host the in-cluster controller derives from
+// that URI when it sets each LibvirtMachine's providerID, and the LIBVIRT_HOST
+// the kubelet registers with, so the Machine<->Node nodeRef completes.
+func (p *Provider) idHost() string { return HostFromURI(ControllerURI(p.cfg)) }
+
+// localSocketURI reports whether uri has no network host (a local socket such
+// as qemu:///system or qemu+unix://...), which the in-cluster controller cannot
+// reach from a pod.
+func localSocketURI(uri string) bool {
+	u, err := url.Parse(uri)
+	if err != nil {
+		return false
+	}
+	return u.Hostname() == ""
 }

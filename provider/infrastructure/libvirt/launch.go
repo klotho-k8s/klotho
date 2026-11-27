@@ -72,8 +72,11 @@ func (p *Provider) Launch(ctx context.Context, spec *cluster.Spec, userData []by
 	if err != nil {
 		return nil, errorf("creating bootstrap domain %q: %w", name, err)
 	}
-	// CreateDomain assigns the UUID from the XML; trust the returned one.
-	providerID := ProviderID(p.client.Host(), dom.UUID)
+	// CreateDomain assigns the UUID from the XML; trust the returned one. The
+	// host is the controller connection URI's host (idHost), not the host-dial
+	// URI's, so klotho's provider ID agrees with the one the in-cluster
+	// controller and the kubelet derive.
+	providerID := ProviderID(p.idHost(), dom.UUID)
 
 	node, err := p.start(ctx, name, providerID)
 	if err != nil {

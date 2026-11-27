@@ -17,6 +17,11 @@ func testProvider(cfg Config) (*Provider, *fakeClient) {
 	f := newFakeClient()
 	cfg.Image = "base.qcow2"
 	cfg.EndpointHost = "192.168.122.10"
+	if cfg.URI == "" && cfg.ControllerURI == "" {
+		// A network controller URI (reachable from the in-cluster controller)
+		// whose host is "localhost", so provider IDs stay libvirt://localhost/*.
+		cfg.ControllerURI = "qemu+tcp://localhost/system"
+	}
 	return New(f, cfg), f
 }
 
@@ -77,6 +82,55 @@ func TestResolvePrecedence(t *testing.T) {
 	p2 := New(newFakeClient(), Config{Image: "cfg.qcow2"})
 	if got := p2.resolve(map[string]string{VarImage: "var.qcow2"}).Image; got != "cfg.qcow2" {
 		t.Errorf("config should win: %q", got)
+	}
+}
+
+func TestControllerURI(t *testing.T) {
+	cases := []struct {
+		name   string
+		cfg    Config
+		want   string
+		idHost string
+	}{
+		{"explicit controllerURI overrides local uri",
+			Config{URI: "qemu:///system", ControllerURI: "qemu+tcp://192.168.122.1/system"},
+			"qemu+tcp://192.168.122.1/system", "192.168.122.1"},
+		{"falls back to a network uri",
+			Config{URI: "qemu+tcp://pve1/system"}, "qemu+tcp://pve1/system", "pve1"},
+		{"falls back to local uri (then blocked by Prepare)",
+			Config{URI: "qemu:///system"}, "qemu:///system", "localhost"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ControllerURI(tc.cfg); got != tc.want {
+				t.Errorf("ControllerURI = %q, want %q", got, tc.want)
+			}
+			p := New(newFakeClient(), tc.cfg)
+			if got := p.idHost(); got != tc.idHost {
+				t.Errorf("idHost = %q, want %q", got, tc.idHost)
+			}
+		})
+	}
+}
+
+func TestPrepareControllerURI(t *testing.T) {
+	// A local-socket controller URI is unreachable from a pod: Prepare blocks it.
+	p, _ := testProvider(Config{URI: "qemu:///system"})
+	if _, err := p.Prepare(context.Background(), &cluster.Spec{Name: "l"}); err == nil || !strings.Contains(err.Error(), "controller cannot reach") {
+		t.Fatalf("want local-socket controller error, got %v", err)
+	}
+	// With a network controller URI, Prepare injects it as LIBVIRT_URI and the
+	// controller host as LIBVIRT_HOST.
+	p, _ = testProvider(Config{URI: "qemu:///system", ControllerURI: "qemu+tcp://192.168.122.1/system"})
+	prep, err := p.Prepare(context.Background(), &cluster.Spec{Name: "lab1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prep.Variables[VarURI] != "qemu+tcp://192.168.122.1/system" {
+		t.Errorf("LIBVIRT_URI = %q", prep.Variables[VarURI])
+	}
+	if prep.Variables[VarLibvirtHost] != "192.168.122.1" {
+		t.Errorf("LIBVIRT_HOST = %q", prep.Variables[VarLibvirtHost])
 	}
 }
 

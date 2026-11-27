@@ -442,15 +442,16 @@ func (a *app) infra(provider string) (infrastructure.Provider, error) {
 	case providerLibvirt:
 		l := a.cfg.Libvirt
 		return libvirtInfra{libvirtprovider.New(nil, libvirtprovider.Config{
-			URI:          l.URI,
-			StoragePool:  l.StoragePool,
-			Image:        l.Image,
-			Network:      l.Network,
-			NetworkType:  l.NetworkType,
-			MemoryMiB:    l.MemoryMiB,
-			CPUs:         l.CPUs,
-			DiskGiB:      l.DiskGiB,
-			EndpointHost: l.EndpointHost,
+			URI:           l.URI,
+			ControllerURI: l.ControllerURI,
+			StoragePool:   l.StoragePool,
+			Image:         l.Image,
+			Network:       l.Network,
+			NetworkType:   l.NetworkType,
+			MemoryMiB:     l.MemoryMiB,
+			CPUs:          l.CPUs,
+			DiskGiB:       l.DiskGiB,
+			EndpointHost:  l.EndpointHost,
 		})}, nil
 	default:
 		return nil, fmt.Errorf("infrastructure provider %q: %w (available: %s, %s, %s, %s, %s, %s, %s, %s)", provider, ErrNotImplemented, providerProxmox, providerDocker, providerAWS, providerLinode, providerGCP, providerAzure, providerHyperv, providerLibvirt)
@@ -545,15 +546,15 @@ func (a *app) providerSecretData(provider string) map[string]string {
 		}
 		return data
 	case providerLibvirt:
-		// The in-cluster Cluster API libvirt controller reaches the same
-		// libvirtd klotho dialed; hand it the connection URI. TLS/SSH
+		// The in-cluster Cluster API libvirt controller runs in a pod, so it
+		// needs a network URI (qemu+tcp:// or qemu+tls://), not the local socket
+		// klotho the CLI may dial: ControllerURI resolves that. TLS/SSH
 		// credentials for a remote URI are delivered separately as a secretRef
 		// on the LibvirtCluster, not here.
-		uri := a.cfg.Libvirt.URI
-		if uri == "" {
-			uri = "qemu:///system"
-		}
-		return map[string]string{"LIBVIRT_URI": uri}
+		return map[string]string{"LIBVIRT_URI": libvirtprovider.ControllerURI(libvirtprovider.Config{
+			URI:           a.cfg.Libvirt.URI,
+			ControllerURI: a.cfg.Libvirt.ControllerURI,
+		})}
 	}
 	return nil
 }

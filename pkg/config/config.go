@@ -515,12 +515,20 @@ func (h Hyperv) ResolvedAgentToken() (string, error) {
 // the connection URI; TLS/SSH credentials for a remote URI are the controller's
 // concern (a secretRef on the LibvirtCluster), not stored here.
 type Libvirt struct {
-	// URI is the libvirt connection URI klotho dials, for example
+	// URI is the libvirt connection URI klotho the CLI dials, for example
 	// "qemu:///system" (a local socket), "qemu+tcp://host/system" or
 	// "qemu+tls://host/system". Empty means the LIBVIRT_URI variable, then
-	// "qemu:///system". It comes from the environment (KLOTHO_LIBVIRT_URI) too,
-	// and is handed to the in-cluster controller as LIBVIRT_URI.
+	// "qemu:///system". It comes from the environment (KLOTHO_LIBVIRT_URI) too.
 	URI string `json:"uri,omitempty"`
+	// ControllerURI is the connection URI the in-cluster Cluster API libvirt
+	// controller uses to reach the same libvirtd. The controller runs in a pod,
+	// so this MUST be a network URI it can reach (qemu+tcp:// or qemu+tls://); a
+	// local-socket URI such as "qemu:///system" is unreachable from a pod and
+	// create blocks on it. Empty falls back to URI, which then must itself be a
+	// network URI. This lets klotho the CLI dial a fast local socket (uri) while
+	// the controller uses a TCP/TLS URI - for example on a WSL2 host, uri:
+	// qemu:///system and controllerURI: qemu+tcp://<bridge-gateway>/system.
+	ControllerURI string `json:"controllerURI,omitempty"`
 	// StoragePool holds the base image and receives the per-domain overlay and
 	// cidata seed. Empty means the LIBVIRT_POOL variable, then "default".
 	StoragePool string `json:"storagePool,omitempty"`
@@ -1533,10 +1541,12 @@ const Skeleton = `# klotho configuration. Every field is optional; see "klotho -
 # capi:
 #   version: v1.12.9
 # libvirt:
-#   uri: qemu:///system      # or qemu+tcp://host/system, qemu+tls://host/system
+#   uri: qemu:///system      # klotho the CLI's URI; or qemu+tcp://host/system, qemu+tls://host/system
 #   # uri: set KLOTHO_LIBVIRT_URI instead of storing it here
+#   controllerURI: qemu+tcp://192.168.122.1/system  # the in-pod controller needs a network URI,
+#                            # not a local socket; empty falls back to uri (which must then be a network URI)
 #   storagePool: default
-#   image: debian-12-generic-amd64.qcow2   # a cloud-init qcow2 volume in the pool
+#   image: ubuntu-24.qcow2   # a cloud-init qcow2 volume in the pool (noble; debian-12 generic lacks cloud-init)
 #   network: default         # a libvirt NAT network
 #   endpointHost: 192.168.122.10           # node zero's address (no load balancer)
 # providers:

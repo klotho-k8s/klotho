@@ -54,7 +54,7 @@ func (p *Provider) Adopt(ctx context.Context, state *cluster.State, bundle []*un
 		}
 		return nil, err
 	}
-	providerID := ProviderID(p.client.Host(), dom.UUID)
+	providerID := ProviderID(p.idHost(), dom.UUID)
 	if state.Bootstrap != nil && state.Bootstrap.ID != "" && !strings.EqualFold(state.Bootstrap.ID, providerID) {
 		return nil, errorf("bootstrap domain %q has provider ID %s, but state records %s", domName, providerID, state.Bootstrap.ID)
 	}
