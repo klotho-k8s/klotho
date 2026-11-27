@@ -29,7 +29,7 @@ func newCreateCommand() *cli.Command {
 			&cli.StringFlag{
 				Name:     "provider",
 				Aliases:  []string{"p"},
-				Usage:    "infrastructure provider (proxmox, docker, aws, linode, gcp, azure, hyperv)",
+				Usage:    "infrastructure provider (proxmox, docker, aws, linode, gcp, azure, hyperv, libvirt)",
 				Required: true,
 			},
 			&cli.StringFlag{
@@ -113,8 +113,8 @@ func runCreate(ctx context.Context, c *cli.Command) error {
 		return err
 	}
 	provider, cp := c.String("provider"), c.String("control-plane")
-	if provider != providerProxmox && provider != providerDocker && provider != providerAWS && provider != providerLinode && provider != providerGCP && provider != providerAzure && provider != providerHyperv {
-		return fmt.Errorf("create: infrastructure provider %q: %w (available: %s, %s, %s, %s, %s, %s, %s)", provider, ErrNotImplemented, providerProxmox, providerDocker, providerAWS, providerLinode, providerGCP, providerAzure, providerHyperv)
+	if provider != providerProxmox && provider != providerDocker && provider != providerAWS && provider != providerLinode && provider != providerGCP && provider != providerAzure && provider != providerHyperv && provider != providerLibvirt {
+		return fmt.Errorf("create: infrastructure provider %q: %w (available: %s, %s, %s, %s, %s, %s, %s, %s)", provider, ErrNotImplemented, providerProxmox, providerDocker, providerAWS, providerLinode, providerGCP, providerAzure, providerHyperv, providerLibvirt)
 	}
 	if cp != cpKubeadm {
 		return fmt.Errorf("create: control plane provider %q: %w (available: %s)", cp, ErrNotImplemented, cpKubeadm)
@@ -205,42 +205,89 @@ func runCreate(ctx context.Context, c *cli.Command) error {
 	return nil
 }
 
-// embedLocalComponents handles an infrastructure provider served over a plain
-// http URL, which the in-cluster Cluster API operator refuses to fetch ("no
-// provider implementation for \"http\" schema") - the case for a local,
-// unpublished provider build such as the Hyper-V provider. It downloads the
-// components (and the sibling metadata.yaml) and moves them onto
-// o.InfraComponents/InfraMetadata, so ProviderObjects embeds them in a labeled
-// ConfigMap and points fetchConfig.selector at it instead of a URL. An https
-// or oci URL is left untouched for the operator to fetch itself.
+// embedLocalComponents handles provider components served over a plain http URL,
+// which the in-cluster Cluster API operator refuses to fetch ("no provider
+// implementation for \"http\" schema") - the case for a local, unpublished
+// provider build (such as the libvirt provider) or a local CAPI mirror. For each
+// such URL it downloads the components (and the sibling metadata.yaml) and moves
+// them onto o's embedded-components fields, so ProviderObjects serves them from a
+// labeled ConfigMap via fetchConfig.selector instead of a URL. An https or oci
+// URL is left untouched for the operator to fetch itself. It is
+// provider-agnostic: it keys on the http scheme, not on any provider name.
+//
+// TODO(dedup): the Hyper-V provider branch carries an infrastructure-only copy
+// of this (same name). De-duplicate once both branches merge.
 func (a *app) embedLocalComponents(ctx context.Context, c *cli.Command, o *generate.CAPIOptions) error {
-	raw := o.InfraFetchURL
-	if raw == "" {
-		return nil
+	// The infrastructure provider's components.
+	if isLocalHTTP(o.InfraFetchURL) {
+		comp, err := fetchComponents(ctx, o.InfraFetchURL)
+		if err != nil {
+			return fmt.Errorf("fetching %s for a local-provider ConfigMap: %w", o.InfraFetchURL, err)
+		}
+		o.InfraComponents = string(comp)
+		if meta, err := fetchSibling(ctx, o.InfraFetchURL, "metadata.yaml"); err == nil {
+			o.InfraMetadata = meta
+		} else {
+			_, _ = fmt.Fprintf(stderr(c), "%s: no metadata.yaml alongside components (%v); synthesizing one from the version\n", o.InfraProviderName, err)
+		}
+		_, _ = fmt.Fprintf(stderr(c), "%s: embedding the locally served components in a ConfigMap (%d bytes); the operator reads it via fetchConfig.selector\n", o.InfraProviderName, len(comp))
+		o.InfraFetchURL = ""
 	}
-	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "http" {
-		return nil
+
+	// The core, bootstrap and control plane components (a CAPI mirror).
+	if isLocalHTTP(o.FetchURL) {
+		for _, f := range []struct {
+			file string
+			dst  *string
+		}{
+			{generate.CoreComponents, &o.CoreComponentsData},
+			{generate.BootstrapComponents, &o.BootstrapComponentsData},
+			{generate.ControlPlaneComponents, &o.ControlPlaneComponentsData},
+		} {
+			comp, err := fetchSibling(ctx, o.FetchURL, f.file)
+			if err != nil {
+				return fmt.Errorf("fetching %s for a local CAPI ConfigMap: %w", f.file, err)
+			}
+			*f.dst = comp
+		}
+		if meta, err := fetchSibling(ctx, o.FetchURL, "metadata.yaml"); err == nil {
+			o.CAPIMetadata = meta
+		} else {
+			_, _ = fmt.Fprintf(stderr(c), "cluster-api: no metadata.yaml at %s (%v); synthesizing one from the version\n", o.FetchURL, err)
+		}
+		_, _ = fmt.Fprintf(stderr(c), "cluster-api: embedding the locally served core/bootstrap/control-plane components in ConfigMaps; the operator reads them via fetchConfig.selector\n")
+		o.FetchURL = ""
 	}
-	comp, err := fetchComponents(ctx, raw)
-	if err != nil {
-		return fmt.Errorf("fetching %s for a local-provider ConfigMap: %w", raw, err)
-	}
-	o.InfraComponents = string(comp)
-	o.InfraFetchURL = ""
-	metaURL := raw[:strings.LastIndex(raw, "/")+1] + "metadata.yaml"
-	if meta, err := fetchComponents(ctx, metaURL); err == nil {
-		o.InfraMetadata = string(meta)
-	} else {
-		_, _ = fmt.Fprintf(stderr(c), "hyperv: no metadata.yaml at %s (%v); synthesizing one from the version\n", metaURL, err)
-	}
-	_, _ = fmt.Fprintf(stderr(c), "%s: embedding the locally served components in a ConfigMap (%d bytes); the operator reads it via fetchConfig.selector\n", o.InfraProviderName, len(comp))
 	return nil
 }
 
+// isLocalHTTP reports whether raw is a plain-http URL (the scheme the in-cluster
+// operator rejects). An https, oci or file URL - or an empty one - returns false.
+func isLocalHTTP(raw string) bool {
+	if raw == "" {
+		return false
+	}
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "http"
+}
+
+// fetchSibling GETs a file sitting next to base (base's last path segment
+// replaced with name), for example the metadata.yaml alongside a components file.
+func fetchSibling(ctx context.Context, base, name string) (string, error) {
+	i := strings.LastIndex(base, "/")
+	if i < 0 {
+		return "", fmt.Errorf("no path in %q", base)
+	}
+	b, err := fetchComponents(ctx, base[:i+1]+name)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
 // fetchComponents GETs url and returns its body, failing on a non-2xx status.
-func fetchComponents(ctx context.Context, url string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+func fetchComponents(ctx context.Context, rawURL string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -250,7 +297,7 @@ func fetchComponents(ctx context.Context, url string) ([]byte, error) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("GET %s: %s", url, resp.Status)
+		return nil, fmt.Errorf("GET %s: %s", rawURL, resp.Status)
 	}
 	return io.ReadAll(resp.Body)
 }

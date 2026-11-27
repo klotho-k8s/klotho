@@ -1,6 +1,10 @@
 package generate
 
 import (
+	"bytes"
+	"compress/gzip"
+	"encoding/base64"
+	"io"
 	"strings"
 	"testing"
 
@@ -95,8 +99,97 @@ func TestProviderObjectsComponentsConfigMap(t *testing.T) {
 	if !strings.Contains(data["components"], "caphv-system") {
 		t.Errorf("ConfigMap data.components = %q", data["components"])
 	}
-	if !strings.Contains(data["metadata"], "releaseSeries") || !strings.Contains(data["metadata"], "contract: v1beta1") {
+	if !strings.Contains(data["metadata"], "releaseSeries") || !strings.Contains(data["metadata"], "contract: v1beta2") {
 		t.Errorf("synthesized ConfigMap data.metadata = %q", data["metadata"])
+	}
+}
+
+func TestProviderObjectsEmbeddedComponents(t *testing.T) {
+	// An unpublished infra provider AND a local CAPI mirror both served over
+	// http: each provider is served from a labeled ConfigMap via
+	// fetchConfig.selector, not a URL the in-cluster operator would reject.
+	objs, err := ProviderObjects(CAPIOptions{
+		Version:                    "v1.12.9",
+		CoreComponentsData:         "core: yaml",
+		BootstrapComponentsData:    "bootstrap: yaml",
+		ControlPlaneComponentsData: "controlplane: yaml",
+		CAPIMetadata:               "capi: metadata",
+		InfraProviderName:          "libvirt",
+		InfraProviderVersion:       "v0.1.0",
+		InfraComponents:            "infra: yaml",
+		InfraMetadata:              "infra: metadata",
+		InfraImage:                 "ghcr.io/klotho-k8s/cluster-api-provider-libvirt:sha-39126d4",
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	y, _ := RenderYAML(objs)
+	for _, want := range []string{
+		// Every provider is served via a selector, never a URL.
+		"selector:",
+		"provider.cluster.x-k8s.io/name: cluster-api",
+		"provider.cluster.x-k8s.io/name: kubeadm",
+		"provider.cluster.x-k8s.io/name: libvirt",
+		"provider.cluster.x-k8s.io/type: core",
+		"provider.cluster.x-k8s.io/type: infrastructure",
+		"provider.cluster.x-k8s.io/version: v1.12.9",
+		"provider.cluster.x-k8s.io/version: v0.1.0",
+		// The components land in ConfigMaps in each provider's namespace.
+		"kind: ConfigMap",
+		"name: cluster-api-core-components-v1.12.9",
+		"name: libvirt-infrastructure-components-v0.1.0",
+		"components: 'infra: yaml'",
+		"metadata: 'capi: metadata'",
+		// The manager image override still flows through.
+		"imageUrl: ghcr.io/klotho-k8s/cluster-api-provider-libvirt:sha-39126d4",
+	} {
+		if !strings.Contains(string(y), want) {
+			t.Errorf("missing %q in\n%s", want, y)
+		}
+	}
+	// Nothing is fetched by URL when every provider is embedded.
+	if strings.Contains(string(y), "url: http") {
+		t.Errorf("no url fetch expected when components are embedded:\n%s", y)
+	}
+}
+
+func TestComponentsConfigMapCompression(t *testing.T) {
+	// A components payload over the 1 MiB ConfigMap limit (as the real CAPI
+	// core-components.yaml is) must be gzip-compressed into binaryData with the
+	// compressed annotation, so it fits and the operator gunzips it.
+	big := strings.Repeat("apiVersion: v1\nkind: ConfigMap\n---\n", 60000) // ~2 MiB
+	if len(big) <= maxConfigMapBytes {
+		t.Fatalf("test payload %d is not over the limit", len(big))
+	}
+	cm := componentsConfigMap("cluster-api", CoreProviderType, "v1.12.9", "capi-system", big, "capi: metadata")
+	anns, _, _ := unstructured.NestedStringMap(cm.Object, "metadata", "annotations")
+	if anns[CompressedAnnotation] != "true" {
+		t.Fatalf("missing compressed annotation, got %v", anns)
+	}
+	if _, found, _ := unstructured.NestedString(cm.Object, "data", "components"); found {
+		t.Error("compressed components must not be in data")
+	}
+	if v, _, _ := unstructured.NestedString(cm.Object, "data", "metadata"); v != "capi: metadata" {
+		t.Errorf("metadata should stay plaintext, got %q", v)
+	}
+	b64, found, _ := unstructured.NestedString(cm.Object, "binaryData", "components")
+	if !found {
+		t.Fatal("compressed components must be in binaryData")
+	}
+	gz, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		t.Fatalf("binaryData not base64: %v", err)
+	}
+	if len(gz) > maxConfigMapBytes {
+		t.Errorf("compressed payload %d still over the limit", len(gz))
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(gz))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(zr)
+	if string(got) != big {
+		t.Error("gunzip did not round-trip the components")
 	}
 }
 

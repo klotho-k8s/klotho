@@ -28,6 +28,7 @@ import (
 	dockerprovider "github.com/klotho-k8s/klotho/provider/infrastructure/docker"
 	gcpprovider "github.com/klotho-k8s/klotho/provider/infrastructure/gcp"
 	hypervprovider "github.com/klotho-k8s/klotho/provider/infrastructure/hyperv"
+	libvirtprovider "github.com/klotho-k8s/klotho/provider/infrastructure/libvirt"
 	linodeprovider "github.com/klotho-k8s/klotho/provider/infrastructure/linode"
 	proxmoxprovider "github.com/klotho-k8s/klotho/provider/infrastructure/proxmox"
 	"github.com/klotho-k8s/klotho/provider/payload"
@@ -43,6 +44,7 @@ const (
 	providerAzure   = "azure"
 	providerDocker  = "docker"
 	providerHyperv  = "hyperv"
+	providerLibvirt = "libvirt"
 	cpKubeadm       = "kubeadm"
 )
 
@@ -437,8 +439,22 @@ func (a *app) infra(provider string) (infrastructure.Provider, error) {
 			EndpointHost: h.EndpointHost,
 			SecureBoot:   h.SecureBoot,
 		})}, nil
+	case providerLibvirt:
+		l := a.cfg.Libvirt
+		return libvirtInfra{libvirtprovider.New(nil, libvirtprovider.Config{
+			URI:           l.URI,
+			ControllerURI: l.ControllerURI,
+			StoragePool:   l.StoragePool,
+			Image:         l.Image,
+			Network:       l.Network,
+			NetworkType:   l.NetworkType,
+			MemoryMiB:     l.MemoryMiB,
+			CPUs:          l.CPUs,
+			DiskGiB:       l.DiskGiB,
+			EndpointHost:  l.EndpointHost,
+		})}, nil
 	default:
-		return nil, fmt.Errorf("infrastructure provider %q: %w (available: %s, %s, %s, %s, %s, %s, %s)", provider, ErrNotImplemented, providerProxmox, providerDocker, providerAWS, providerLinode, providerGCP, providerAzure, providerHyperv)
+		return nil, fmt.Errorf("infrastructure provider %q: %w (available: %s, %s, %s, %s, %s, %s, %s, %s)", provider, ErrNotImplemented, providerProxmox, providerDocker, providerAWS, providerLinode, providerGCP, providerAzure, providerHyperv, providerLibvirt)
 	}
 }
 
@@ -529,6 +545,16 @@ func (a *app) providerSecretData(provider string) map[string]string {
 			return nil
 		}
 		return data
+	case providerLibvirt:
+		// The in-cluster Cluster API libvirt controller runs in a pod, so it
+		// needs a network URI (qemu+tcp:// or qemu+tls://), not the local socket
+		// klotho the CLI may dial: ControllerURI resolves that. TLS/SSH
+		// credentials for a remote URI are delivered separately as a secretRef
+		// on the LibvirtCluster, not here.
+		return map[string]string{"LIBVIRT_URI": libvirtprovider.ControllerURI(libvirtprovider.Config{
+			URI:           a.cfg.Libvirt.URI,
+			ControllerURI: a.cfg.Libvirt.ControllerURI,
+		})}
 	}
 	return nil
 }
@@ -569,6 +595,11 @@ type hypervInfra struct{ *hypervprovider.Provider }
 
 func (hypervInfra) Tag(cluster string) string { return hypervprovider.Tag(cluster) }
 
+// libvirtInfra adds the provider's tag convention to the libvirt provider.
+type libvirtInfra struct{ *libvirtprovider.Provider }
+
+func (libvirtInfra) Tag(cluster string) string { return libvirtprovider.Tag(cluster) }
+
 // kubeadmProvider adds the kubeadm provider's bootstrap machine naming.
 type kubeadmProvider struct{ *kubeadm.Provider }
 
@@ -577,20 +608,25 @@ func (kubeadmProvider) BootstrapMachineName(cluster string) string {
 }
 
 var (
-	_ klotho.Tagger           = proxmoxInfra{}
-	_ klotho.Tagger           = awsInfra{}
-	_ klotho.Tagger           = linodeInfra{}
-	_ klotho.Tagger           = gcpInfra{}
-	_ klotho.Tagger           = azureInfra{}
-	_ klotho.Tagger           = hypervInfra{}
-	_ klotho.BootstrapNamer   = kubeadmProvider{}
-	_ controlplane.Provider   = kubeadmProvider{}
-	_ infrastructure.Provider = proxmoxInfra{}
-	_ infrastructure.Provider = awsInfra{}
-	_ infrastructure.Provider = linodeInfra{}
-	_ infrastructure.Provider = gcpInfra{}
-	_ infrastructure.Provider = azureInfra{}
-	_ infrastructure.Provider = hypervInfra{}
+	_ klotho.Tagger = proxmoxInfra{}
+	_ klotho.Tagger = awsInfra{}
+	_ klotho.Tagger = linodeInfra{}
+	_ klotho.Tagger = gcpInfra{}
+	_ klotho.Tagger = azureInfra{}
+	_ klotho.Tagger = hypervInfra{}
+	_ klotho.Tagger = libvirtInfra{}
+	// libvirt's MachineTemplate has no tags field (the CRD rejects the default
+	// spec.template.spec.tags); it tags via the domain description instead.
+	_ klotho.MachineTemplateTagger = libvirtInfra{}
+	_ klotho.BootstrapNamer        = kubeadmProvider{}
+	_ controlplane.Provider        = kubeadmProvider{}
+	_ infrastructure.Provider      = proxmoxInfra{}
+	_ infrastructure.Provider      = awsInfra{}
+	_ infrastructure.Provider      = linodeInfra{}
+	_ infrastructure.Provider      = gcpInfra{}
+	_ infrastructure.Provider      = azureInfra{}
+	_ infrastructure.Provider      = hypervInfra{}
+	_ infrastructure.Provider      = libvirtInfra{}
 )
 
 func firstNonEmpty(s ...string) string {

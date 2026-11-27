@@ -14,6 +14,7 @@
 //	KLOTHO_PROXMOX_TOKEN_ID     proxmox.tokenId
 //	KLOTHO_PROXMOX_SECRET       proxmox.secret
 //	KLOTHO_PROXMOX_INSECURE     proxmox.insecure
+//	KLOTHO_LIBVIRT_URI          libvirt.uri
 //	KLOTHO_S3_ACCESS_KEY_ID     payload.s3 access key (environment only)
 //	KLOTHO_S3_SECRET_ACCESS_KEY payload.s3 secret key (environment only)
 //
@@ -61,6 +62,9 @@ const (
 	EnvGCPCredentials = "GOOGLE_APPLICATION_CREDENTIALS"
 	// EnvAzureClientSecret is the Azure service-principal client secret.
 	EnvAzureClientSecret = "AZURE_CLIENT_SECRET"
+	// EnvLibvirtURI is the libvirt connection URI; it sets libvirt.uri when that
+	// is unset.
+	EnvLibvirtURI = "KLOTHO_LIBVIRT_URI"
 )
 
 // Defaults.
@@ -110,6 +114,15 @@ const (
 	// ProviderHyperV is the hyperv infrastructure provider's name, as
 	// clusterctl and --provider know it.
 	ProviderHyperV = "hyperv"
+	// DefaultLibvirtVersion is the Cluster API libvirt provider release klotho
+	// installs for the libvirt provider. It is produced from
+	// klotho-k8s/cluster-api-provider-libvirt; libvirt is not in clusterctl's
+	// built-in provider list, so providers.libvirt.fetchURL (and componentsURL)
+	// must point at its release. VERIFY against a live run.
+	DefaultLibvirtVersion = "v0.1.0"
+	// ProviderLibvirt is the libvirt infrastructure provider's name, as
+	// clusterctl and --provider know it.
+	ProviderLibvirt = "libvirt"
 	// FileName is the configuration file's name inside the config directory.
 	FileName = "config.yaml"
 	// IdentityFileName is the default age identity file's name inside the
@@ -157,6 +170,7 @@ type Config struct {
 	Azure             Azure      `json:"azure,omitempty"`
 	Docker            Docker     `json:"docker,omitempty"`
 	Hyperv            Hyperv     `json:"hyperv,omitempty"`
+	Libvirt           Libvirt    `json:"libvirt,omitempty"`
 	CAPI              CAPI       `json:"capi,omitempty"`
 	// Nodes configures what every node of a generated cluster does at boot.
 	Nodes Nodes `json:"nodes,omitempty"`
@@ -494,6 +508,50 @@ func (h Hyperv) ResolvedAgentToken() (string, error) {
 		return strings.TrimSpace(string(b)), nil
 	}
 	return os.Getenv("HYPERV_AGENT_TOKEN"), nil
+}
+
+// Libvirt holds the libvirt/KVM connection and placement settings for the
+// libvirt (Cluster API libvirt) provider. klotho reaches libvirtd directly over
+// the connection URI; TLS/SSH credentials for a remote URI are the controller's
+// concern (a secretRef on the LibvirtCluster), not stored here.
+type Libvirt struct {
+	// URI is the libvirt connection URI klotho the CLI dials, for example
+	// "qemu:///system" (a local socket), "qemu+tcp://host/system" or
+	// "qemu+tls://host/system". Empty means the LIBVIRT_URI variable, then
+	// "qemu:///system". It comes from the environment (KLOTHO_LIBVIRT_URI) too.
+	URI string `json:"uri,omitempty"`
+	// ControllerURI is the connection URI the in-cluster Cluster API libvirt
+	// controller uses to reach the same libvirtd. The controller runs in a pod,
+	// so this MUST be a network URI it can reach (qemu+tcp:// or qemu+tls://); a
+	// local-socket URI such as "qemu:///system" is unreachable from a pod and
+	// create blocks on it. Empty falls back to URI, which then must itself be a
+	// network URI. This lets klotho the CLI dial a fast local socket (uri) while
+	// the controller uses a TCP/TLS URI - for example on a WSL2 host, uri:
+	// qemu:///system and controllerURI: qemu+tcp://<bridge-gateway>/system.
+	ControllerURI string `json:"controllerURI,omitempty"`
+	// StoragePool holds the base image and receives the per-domain overlay and
+	// cidata seed. Empty means the LIBVIRT_POOL variable, then "default".
+	StoragePool string `json:"storagePool,omitempty"`
+	// Image is the base cloud-image qcow2 volume name in StoragePool the
+	// bootstrap overlay is backed by. Empty means the LIBVIRT_IMAGE variable.
+	// Required; the provider never downloads or builds it.
+	Image string `json:"image,omitempty"`
+	// Network is the libvirt virtual network (NetworkType "network") or host
+	// bridge (NetworkType "bridge") the NIC attaches to. Empty means the
+	// LIBVIRT_NETWORK variable, then "default".
+	Network string `json:"network,omitempty"`
+	// NetworkType is "network" (a libvirt virtual network, the default) or
+	// "bridge" (a host bridge).
+	NetworkType string `json:"networkType,omitempty"`
+	// MemoryMiB and CPUs size the bootstrap domain. Zero means 4096 and 2.
+	MemoryMiB int `json:"memoryMiB,omitempty"`
+	CPUs      int `json:"cpus,omitempty"`
+	// DiskGiB optionally grows the overlay's virtual capacity. Zero inherits
+	// the base image's virtual size.
+	DiskGiB int `json:"diskGiB,omitempty"`
+	// EndpointHost is the static control plane endpoint address; libvirt has no
+	// load balancer. Empty means the CONTROL_PLANE_ENDPOINT_HOST variable.
+	EndpointHost string `json:"endpointHost,omitempty"`
 }
 
 // Proxmox holds the Proxmox VE connection and placement settings.
@@ -1149,6 +1207,11 @@ func (c *Config) applyEnv() error {
 	if v, ok := os.LookupEnv(EnvAzureClientSecret); ok && v != "" {
 		c.Azure.ClientSecret = v
 	}
+	if c.Libvirt.URI == "" {
+		if v, ok := os.LookupEnv(EnvLibvirtURI); ok && v != "" {
+			c.Libvirt.URI = v
+		}
+	}
 	return nil
 }
 
@@ -1204,6 +1267,11 @@ func (c *Config) applyDefaults() {
 	c.Providers[ProviderHyperV] = hv
 	c.Hyperv.AgentCAFile = Expand(c.Hyperv.AgentCAFile)
 	c.Hyperv.AgentTokenFile = Expand(c.Hyperv.AgentTokenFile)
+	libvirt := c.Providers[ProviderLibvirt]
+	if libvirt.Version == "" {
+		libvirt.Version = DefaultLibvirtVersion
+	}
+	c.Providers[ProviderLibvirt] = libvirt
 	if c.Variables == nil {
 		c.Variables = map[string]string{}
 	}
@@ -1472,9 +1540,22 @@ const Skeleton = `# klotho configuration. Every field is optional; see "klotho -
 #     # or leave both unset to use the AWS credential chain
 # capi:
 #   version: v1.12.9
+# libvirt:
+#   uri: qemu:///system      # klotho the CLI's URI; or qemu+tcp://host/system, qemu+tls://host/system
+#   # uri: set KLOTHO_LIBVIRT_URI instead of storing it here
+#   controllerURI: qemu+tcp://192.168.122.1/system  # the in-pod controller needs a network URI,
+#                            # not a local socket; empty falls back to uri (which must then be a network URI)
+#   storagePool: default
+#   image: ubuntu-24.qcow2   # a cloud-init qcow2 volume in the pool (noble; debian-12 generic lacks cloud-init)
+#   network: default         # a libvirt NAT network
+#   endpointHost: 192.168.122.10           # node zero's address (no load balancer)
 # providers:
 #   proxmox:
 #     version: v0.9.2
+#   libvirt:
+#     version: v0.1.0
+#     # libvirt is not in clusterctl's built-in list, so point these at its release:
+#     # fetchURL: https://github.com/klotho-k8s/cluster-api-provider-libvirt/releases/<version>/infrastructure-components.yaml
 #     # a release of another repository (a fork): its components URL and, because the
 #     # operator keeps the image repository it knows, the manager image to run
 #     # fetchURL: https://github.com/<owner>/cluster-api-provider-proxmox/releases/<version>/infrastructure-components.yaml

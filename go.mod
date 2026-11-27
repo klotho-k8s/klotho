@@ -15,6 +15,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.116.1
 	github.com/aws/smithy-go v1.28.10
 	github.com/blang/semver/v4 v4.0.0
+	github.com/digitalocean/go-libvirt v0.0.0-20261013170128-efbbdf578ac8
 	github.com/kdomanski/iso9660 v0.4.0
 	github.com/linode/linodego/v2 v2.6.0
 	github.com/luthermonson/go-proxmox v0.10.0

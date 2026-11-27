@@ -1,6 +1,9 @@
 package generate
 
 import (
+	"bytes"
+	"compress/gzip"
+	"encoding/base64"
 	"fmt"
 	"slices"
 	"sort"
@@ -41,18 +44,40 @@ const (
 	ControlPlaneComponents = "control-plane-components.yaml"
 )
 
-// Labels the Cluster API operator matches a components ConfigMap on. A
-// provider whose fetchConfig uses a selector is served from a ConfigMap
-// carrying these labels; the operator matches the selector and requires the
-// version label to equal the provider's spec.version.
+// Labels the Cluster API operator matches a components ConfigMap on. A provider
+// whose fetchConfig uses a selector is served from a ConfigMap carrying these
+// labels; the operator matches the selector and requires the version label to
+// equal the provider's spec.version.
+//
+// Embedding components in a ConfigMap is how klotho serves a provider whose
+// components file is reachable only over plain http (a local, unpublished
+// build): the in-cluster operator refuses an http fetchConfig URL ("no provider
+// implementation for \"http\" schema"), but reads components from a ConfigMap on
+// any scheme. It is provider-agnostic - any of the core, bootstrap, control
+// plane or infrastructure providers can be served this way.
 const (
 	ProviderNameLabel    = "provider.cluster.x-k8s.io/name"
 	ProviderTypeLabel    = "provider.cluster.x-k8s.io/type"
 	ProviderVersionLabel = "provider.cluster.x-k8s.io/version"
-	// InfrastructureProviderType is the operator's provider-type label value
-	// for an infrastructure provider.
+	// CompressedAnnotation marks a components ConfigMap whose components are
+	// gzip-compressed in binaryData rather than plaintext in data. The Cluster
+	// API operator reads binaryData["components"] and gunzips it when this is
+	// "true" (its getComponentsData). Used for components that would exceed the
+	// Kubernetes ConfigMap size limit uncompressed (the CAPI core components).
+	CompressedAnnotation = "provider.cluster.x-k8s.io/compressed"
+	compressedValue      = "true"
+
+	// Operator provider-type label values, by provider role.
+	CoreProviderType           = "core"
+	BootstrapProviderType      = "bootstrap"
+	ControlPlaneProviderType   = "control-plane"
 	InfrastructureProviderType = "infrastructure"
 )
+
+// maxConfigMapBytes is the Kubernetes ConfigMap size limit (1 MiB). Components
+// (plus metadata) over it are gzip-compressed into binaryData, mirroring the
+// operator's own needToCompress threshold.
+const maxConfigMapBytes = 1024 * 1024
 
 // CAPIOptions configure the Cluster API providers the operator installs on
 // the new cluster.
@@ -62,28 +87,40 @@ type CAPIOptions struct {
 	// FetchURL, when set, is the release directory the core, bootstrap and
 	// control plane components are fetched from
 	// (https://github.com/<owner>/cluster-api/releases/<version>/); the
-	// component file name is appended.
+	// component file name is appended. The in-cluster operator fetches it
+	// directly, so it must be an https or oci URL; a plain-http URL is
+	// rejected. To serve the CAPI components over http (a local mirror), set
+	// Core/Bootstrap/ControlPlaneComponentsData instead and klotho embeds them
+	// in ConfigMaps.
 	FetchURL string
 	// FeatureGates are set on the core provider's manager.
 	FeatureGates map[string]bool
 
+	// CoreComponentsData, BootstrapComponentsData and ControlPlaneComponentsData
+	// are the rendered core-, bootstrap- and control-plane-components.yaml. When
+	// set, klotho embeds each in a labeled ConfigMap and points the provider's
+	// fetchConfig.selector at it rather than at FetchURL - the way a CAPI mirror
+	// served over plain http (which the operator refuses to fetch) reaches the
+	// operator. CAPIMetadata is the shared cluster-api metadata.yaml stored next
+	// to each; empty synthesizes a minimal one from Version.
+	CoreComponentsData         string
+	BootstrapComponentsData    string
+	ControlPlaneComponentsData string
+	CAPIMetadata               string
+
 	InfraProviderName    string
 	InfraProviderVersion string
 	// InfraFetchURL, when set, is the full URL of the infrastructure
-	// provider's components file. The in-cluster Cluster API operator fetches
-	// it directly, so it must be an https or oci URL the operator accepts; a
-	// plain-http URL is rejected ("no provider implementation for \"http\"
-	// schema"). To serve a local, unpublished provider over http, set
-	// InfraComponents instead of (or as well as) this.
+	// provider's components file. The in-cluster operator fetches it directly,
+	// so it must be an https or oci URL the operator accepts; a plain-http URL
+	// is rejected ("no provider implementation for \"http\" schema"). To serve a
+	// local, unpublished provider over http, set InfraComponents instead.
 	InfraFetchURL string
 	// InfraComponents, when set, is the infrastructure provider's rendered
-	// components manifest (its infrastructure-components.yaml). klotho embeds
-	// it in a labeled ConfigMap and points the provider's
-	// fetchConfig.selector at that ConfigMap rather than at InfraFetchURL. It
-	// is how a provider available only over a plain-http URL (a local,
-	// unpublished build) reaches the operator, which rejects an http
-	// fetchConfig URL but reads components from a ConfigMap on any scheme.
-	// When set, InfraFetchURL is ignored for the infrastructure provider.
+	// components manifest (its infrastructure-components.yaml). klotho embeds it
+	// in a labeled ConfigMap and points the provider's fetchConfig.selector at
+	// that ConfigMap rather than at InfraFetchURL. When set, InfraFetchURL is
+	// ignored for the infrastructure provider.
 	InfraComponents string
 	// InfraMetadata is the provider's metadata.yaml, stored next to the
 	// components in the ConfigMap; the operator requires both keys. Empty
@@ -113,6 +150,8 @@ func DefaultInfraNamespace(provider string) string {
 	switch provider {
 	case "proxmox":
 		return "capmox-system"
+	case "libvirt":
+		return "capi-libvirt-system"
 	case "":
 		return ""
 	}
@@ -241,7 +280,31 @@ func ProviderObjects(o CAPIOptions, redact bool) ([]*unstructured.Unstructured, 
 		return u
 	}
 
-	core := provider(KindCoreProvider, CoreNamespace, CoreProviderName, o.Version, fetch(CoreComponents))
+	// embedFetch returns the fetchConfig for a provider: a selector pointing at
+	// an embedded-components ConfigMap (appended to objs) when components are
+	// supplied, else urlFetch for the operator to fetch directly. This is the
+	// provider-agnostic path for a provider served only over plain http.
+	//
+	// TODO(dedup): the Hyper-V provider branch (feat/hyperv-provider) carries an
+	// equivalent, infrastructure-only copy of this ConfigMap-embedding
+	// mechanism (componentsConfigMap/syntheticMetadata here and
+	// embedLocalComponents in pkg/cli/create.go). Once both the Hyper-V and
+	// libvirt branches merge, de-duplicate to this single provider-agnostic
+	// implementation (which also covers the core/bootstrap/control-plane
+	// providers).
+	embedFetch := func(name, ptype, version, ns, components, meta string, urlFetch map[string]any) map[string]any {
+		if components == "" {
+			return urlFetch
+		}
+		objs = append(objs, componentsConfigMap(name, ptype, version, ns, components, meta))
+		return map[string]any{"selector": map[string]any{"matchLabels": map[string]any{
+			ProviderNameLabel: name,
+			ProviderTypeLabel: ptype,
+		}}}
+	}
+
+	core := provider(KindCoreProvider, CoreNamespace, CoreProviderName, o.Version,
+		embedFetch(CoreProviderName, CoreProviderType, o.Version, CoreNamespace, o.CoreComponentsData, o.CAPIMetadata, fetch(CoreComponents)))
 	if len(o.FeatureGates) > 0 {
 		gates := map[string]any{}
 		for k, v := range o.FeatureGates {
@@ -251,23 +314,16 @@ func ProviderObjects(o CAPIOptions, redact bool) ([]*unstructured.Unstructured, 
 	}
 	objs = append(objs,
 		core,
-		provider(KindBootstrapProvider, BootstrapNamespace, KubeadmProviderName, o.Version, fetch(BootstrapComponents)),
-		provider(KindControlPlaneProvider, ControlPlaneNamespace, KubeadmProviderName, o.Version, fetch(ControlPlaneComponents)),
+		provider(KindBootstrapProvider, BootstrapNamespace, KubeadmProviderName, o.Version,
+			embedFetch(KubeadmProviderName, BootstrapProviderType, o.Version, BootstrapNamespace, o.BootstrapComponentsData, o.CAPIMetadata, fetch(BootstrapComponents))),
+		provider(KindControlPlaneProvider, ControlPlaneNamespace, KubeadmProviderName, o.Version,
+			embedFetch(KubeadmProviderName, ControlPlaneProviderType, o.Version, ControlPlaneNamespace, o.ControlPlaneComponentsData, o.CAPIMetadata, fetch(ControlPlaneComponents))),
 	)
-	var infraFetch map[string]any
-	switch {
-	case o.InfraComponents != "":
-		// Serve the provider from a labeled ConfigMap instead of a URL: the
-		// operator reads components from the ConfigMap the selector matches,
-		// which works even for a provider available only over plain http.
-		objs = append(objs, componentsConfigMap(o, infraNS))
-		infraFetch = map[string]any{"selector": map[string]any{"matchLabels": map[string]any{
-			ProviderNameLabel: o.InfraProviderName,
-			ProviderTypeLabel: InfrastructureProviderType,
-		}}}
-	case o.InfraFetchURL != "":
-		infraFetch = map[string]any{"url": o.InfraFetchURL}
+	var infraURLFetch map[string]any
+	if o.InfraFetchURL != "" {
+		infraURLFetch = map[string]any{"url": o.InfraFetchURL}
 	}
+	infraFetch := embedFetch(o.InfraProviderName, InfrastructureProviderType, o.InfraProviderVersion, infraNS, o.InfraComponents, o.InfraMetadata, infraURLFetch)
 	infra := provider(KindInfrastructureProvider, infraNS, o.InfraProviderName, o.InfraProviderVersion, infraFetch)
 	if o.InfraImage != "" {
 		infra.Object["spec"].(map[string]any)["deployment"].(map[string]any)["containers"] = []any{
@@ -286,38 +342,59 @@ func ProviderObjects(o CAPIOptions, redact bool) ([]*unstructured.Unstructured, 
 	return objs, nil
 }
 
-// componentsConfigMap builds the ConfigMap the Cluster API operator reads an
-// infrastructure provider's components and metadata from when the provider is
-// served through a fetchConfig.selector rather than a URL. Its labels carry
-// the provider's name, type and version so the selector matches it and the
-// operator's version check (the version label must equal spec.version) passes.
-func componentsConfigMap(o CAPIOptions, ns string) *unstructured.Unstructured {
-	meta := o.InfraMetadata
+// componentsConfigMap builds the ConfigMap the Cluster API operator reads a
+// provider's components and metadata from when the provider is served through a
+// fetchConfig.selector rather than a URL. Its labels carry the provider's name,
+// type and version so the selector matches it and the operator's version check
+// (the version label must equal spec.version) passes. The ConfigMap must live
+// in the provider's namespace, where the operator looks for it.
+func componentsConfigMap(name, ptype, version, ns, components, meta string) *unstructured.Unstructured {
 	if meta == "" {
-		meta = syntheticMetadata(o.InfraProviderVersion)
+		meta = syntheticMetadata(version)
 	}
-	return &unstructured.Unstructured{Object: map[string]any{
+	metadata := map[string]any{
+		"name":      name + "-" + ptype + "-components-" + version,
+		"namespace": ns,
+		"labels": map[string]any{
+			ProviderNameLabel:    name,
+			ProviderTypeLabel:    ptype,
+			ProviderVersionLabel: version,
+		},
+	}
+	obj := map[string]any{
 		"apiVersion": "v1", "kind": "ConfigMap",
-		"metadata": map[string]any{
-			"name":      o.InfraProviderName + "-components-" + o.InfraProviderVersion,
-			"namespace": ns,
-			"labels": map[string]any{
-				ProviderNameLabel:    o.InfraProviderName,
-				ProviderTypeLabel:    InfrastructureProviderType,
-				ProviderVersionLabel: o.InfraProviderVersion,
-			},
-		},
-		"data": map[string]any{
-			"metadata":   meta,
-			"components": o.InfraComponents,
-		},
-	}}
+		"metadata": metadata,
+		// metadata.yaml is small and always stored plaintext, even when the
+		// components are compressed (the operator never decompresses it).
+		"data": map[string]any{"metadata": meta},
+	}
+	// Components over the ConfigMap size limit are gzip-compressed into
+	// binaryData, with the compressed annotation the operator keys on; smaller
+	// ones stay plaintext in data. The unstructured value is the base64 of the
+	// gzip bytes, which is how a []byte binaryData value serializes to the API.
+	if len(meta)+len(components) > maxConfigMapBytes {
+		metadata["annotations"] = map[string]any{CompressedAnnotation: compressedValue}
+		obj["binaryData"] = map[string]any{"components": base64.StdEncoding.EncodeToString(gzipBytes([]byte(components)))}
+	} else {
+		obj["data"].(map[string]any)["components"] = components
+	}
+	return &unstructured.Unstructured{Object: obj}
 }
 
-// syntheticMetadata returns a minimal clusterctl Metadata for version, used
-// when the provider's own metadata.yaml is not supplied. The release series is
-// taken from the version's major and minor; the contract is the Cluster API
-// contract klotho targets (v1beta1).
+// gzipBytes returns b gzip-compressed.
+func gzipBytes(b []byte) []byte {
+	var buf bytes.Buffer
+	w := gzip.NewWriter(&buf)
+	_, _ = w.Write(b)
+	_ = w.Close()
+	return buf.Bytes()
+}
+
+// syntheticMetadata returns a minimal clusterctl Metadata for version, used when
+// the provider's own metadata.yaml is not supplied. The release series is taken
+// from the version's major and minor; the contract is the Cluster API contract
+// klotho targets (v1beta2). Prefer supplying the real metadata.yaml: the
+// operator rejects a provider whose declared contract does not match the core's.
 func syntheticMetadata(version string) string {
 	major, minor := 0, 0
 	if parts := strings.SplitN(strings.TrimPrefix(version, "v"), ".", 3); len(parts) >= 2 {
@@ -329,7 +406,7 @@ kind: Metadata
 releaseSeries:
 - major: %d
   minor: %d
-  contract: v1beta1
+  contract: v1beta2
 `, major, minor)
 }
 
