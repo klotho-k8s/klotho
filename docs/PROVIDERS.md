@@ -40,11 +40,12 @@ inside)
 | Proxmox | CAPMOX | by name | kube-vip / user-supplied | ✅ | ✅ | 🧹 LXC sidecar | Proxmox VE 9.x home lab |
 | Docker | CAPD | by name + label | — (local) | ✅ | ✅ | 🧹 cleanup container + `--watch` | podman (Windows/WSL) |
 | AWS | CAPA | by tag (no pre-set id) | $0 option (LB disabled) | ✅ | ✅ create / ⚠️ delete | ⚠️ reaches zero, not hands-off | AWS account |
-| Hyper-V | CAPHV | by name | node-zero IP | 🧪 | 🧪 stack healthy, pivot + delete in progress | 🚧 host-daemon teardown WIP | Windows 11, single node |
+| Hyper-V | CAPHV | by name | node-zero IP | ✅ | ✅ create → pivot → clean delete | 🧹 host-side finisher (daemon untouched) | Windows 11, single node |
+| libvirt / KVM | CAPLV | by name | node-zero IP | ✅ | ✅ create → pivot → clean delete | 🧹 destroy + undefine (libvirtd external, no sidecar) | WSL2 nested KVM |
 | Linode | CAPL | by `providerID` | $0 option (NodeBalancer optional) | ✅ | 🟡 live run pending | 🚧 finisher TODO | — |
 | GCP | CAPG | by name | managed LB (forced) | ✅ | 🟡 **help wanted** | 🚧 finisher TODO | — |
 | Azure | CAPZ | by name (pre-set ok) | internal LB (forced) | ✅ | 🟡 **help wanted** | 🚧 finisher TODO | — |
-| Apple `vz` | CAPVZ | by name / `providerID` | node-zero IP | 🧪 scaffold | ❌ | 🚧 | macOS / Apple Silicon (planned) |
+| Apple `vz` | CAPVZ | by name / `providerID` | node-zero IP | ✅ adapter | 🟡 awaiting Mac run | 🧹 daemon finisher (no deadlock) | macOS / Apple Silicon |
 
 *Planned next:* vSphere (CAPV), OpenStack (CAPO), Hetzner (CAPH).
 
