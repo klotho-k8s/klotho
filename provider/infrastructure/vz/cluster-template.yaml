@@ -1,0 +1,101 @@
+# klotho flat, single-node vz (Cluster API vz provider) cluster template.
+#
+# It is authored in the Cluster API v1beta2 contract (object references use
+# apiGroup, not apiVersion), which is what klotho's generator requires. The vz
+# infrastructure objects are v1alpha1, the provider's own version.
+#
+# This is the EXPERIMENTAL single-node dev layout: one control-plane VM, no
+# workers, on one Apple-Silicon Mac. klotho fills CLUSTER_NAME, NAMESPACE,
+# KUBERNETES_VERSION and CONTROL_PLANE_MACHINE_COUNT itself, and the vz provider's
+# Prepare fills VZ_HOST, VZ_IMAGE_PATH and CONTROL_PLANE_ENDPOINT_HOST (the single
+# control-plane VM's address, since vz has no load balancer). Nothing else needs
+# to be supplied.
+#
+# The base image is a raw arm64 cloud-init (NoCloud) enabled Linux cloud image on
+# the Mac. If it carries no Kubernetes, create the cluster with "klotho create
+# --install-kubernetes" (or nodes.installKubernetes: true) so containerd and the
+# KUBERNETES_VERSION of kubeadm/kubelet/kubectl are installed on the node before
+# kubeadm runs.
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: "${CLUSTER_NAME}"
+  namespace: "${NAMESPACE}"
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks:
+      - 192.168.0.0/16
+  controlPlaneRef:
+    apiGroup: controlplane.cluster.x-k8s.io
+    kind: KubeadmControlPlane
+    name: "${CLUSTER_NAME}-control-plane"
+  infrastructureRef:
+    apiGroup: infrastructure.cluster.x-k8s.io
+    kind: VZCluster
+    name: "${CLUSTER_NAME}"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+kind: VZCluster
+metadata:
+  name: "${CLUSTER_NAME}"
+  namespace: "${NAMESPACE}"
+spec:
+  # The vz host (the Mac running capvz-daemon). It is recorded in the machine
+  # providerID (vz://<host>/<vmid>) and must match the kubelet --provider-id
+  # host below. Informational for the single-host dev layout.
+  host: "${VZ_HOST}"
+  # vz has no load balancer: klotho supplies a static endpoint (the address node
+  # zero will have on the NAT network), which the provider only validates.
+  controlPlaneEndpoint:
+    host: "${CONTROL_PLANE_ENDPOINT_HOST}"
+    port: 6443
+---
+apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+kind: KubeadmControlPlane
+metadata:
+  name: "${CLUSTER_NAME}-control-plane"
+  namespace: "${NAMESPACE}"
+spec:
+  replicas: ${CONTROL_PLANE_MACHINE_COUNT}
+  version: "${KUBERNETES_VERSION}"
+  machineTemplate:
+    spec:
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: VZMachineTemplate
+        name: "${CLUSTER_NAME}-control-plane"
+  kubeadmConfigSpec:
+    clusterConfiguration: {}
+    initConfiguration:
+      nodeRegistration:
+        criSocket: unix:///var/run/containerd/containerd.sock
+        name: '{{ ds.meta_data.local_hostname }}'
+        # vz runs no cloud controller manager, so the kubelet must register its
+        # own provider ID. ds.meta_data.instance_id is the vmid the daemon
+        # assigned and seeded into the NoCloud meta-data, so this matches the
+        # adopted VZMachine's spec.providerID "vz://<host>/<vmid>" and the
+        # Machine<->Node nodeRef completes.
+        kubeletExtraArgs:
+        - name: provider-id
+          value: "vz://${VZ_HOST}/{{ ds.meta_data.instance_id }}"
+    joinConfiguration:
+      nodeRegistration:
+        criSocket: unix:///var/run/containerd/containerd.sock
+        name: '{{ ds.meta_data.local_hostname }}'
+        kubeletExtraArgs:
+        - name: provider-id
+          value: "vz://${VZ_HOST}/{{ ds.meta_data.instance_id }}"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+kind: VZMachineTemplate
+metadata:
+  name: "${CLUSTER_NAME}-control-plane"
+  namespace: "${NAMESPACE}"
+spec:
+  template:
+    spec:
+      # Path, on the Mac host, to a raw arm64 cloud-init enabled Linux image.
+      image: "${VZ_IMAGE_PATH}"
+      cpuCount: 2
+      memoryMiB: 4096

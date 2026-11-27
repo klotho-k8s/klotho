@@ -31,6 +31,7 @@ import (
 	libvirtprovider "github.com/klotho-k8s/klotho/provider/infrastructure/libvirt"
 	linodeprovider "github.com/klotho-k8s/klotho/provider/infrastructure/linode"
 	proxmoxprovider "github.com/klotho-k8s/klotho/provider/infrastructure/proxmox"
+	vzprovider "github.com/klotho-k8s/klotho/provider/infrastructure/vz"
 	"github.com/klotho-k8s/klotho/provider/payload"
 	s3payload "github.com/klotho-k8s/klotho/provider/payload/s3"
 )
@@ -45,6 +46,7 @@ const (
 	providerDocker  = "docker"
 	providerHyperv  = "hyperv"
 	providerLibvirt = "libvirt"
+	providerVZ      = "vz"
 	cpKubeadm       = "kubeadm"
 )
 
@@ -453,8 +455,21 @@ func (a *app) infra(provider string) (infrastructure.Provider, error) {
 			DiskGiB:       l.DiskGiB,
 			EndpointHost:  l.EndpointHost,
 		})}, nil
+	case providerVZ:
+		v := a.cfg.VZ
+		return vzInfra{vzprovider.New(nil, vzprovider.Config{
+			Endpoint:     v.Endpoint,
+			CA:           v.CA,
+			ServerName:   v.ServerName,
+			Token:        v.Token,
+			Host:         v.Host,
+			Image:        v.Image,
+			MemoryMiB:    v.MemoryMiB,
+			CPUs:         v.CPUs,
+			EndpointHost: v.EndpointHost,
+		})}, nil
 	default:
-		return nil, fmt.Errorf("infrastructure provider %q: %w (available: %s, %s, %s, %s, %s, %s, %s, %s)", provider, ErrNotImplemented, providerProxmox, providerDocker, providerAWS, providerLinode, providerGCP, providerAzure, providerHyperv, providerLibvirt)
+		return nil, fmt.Errorf("infrastructure provider %q: %w (available: %s, %s, %s, %s, %s, %s, %s, %s, %s)", provider, ErrNotImplemented, providerProxmox, providerDocker, providerAWS, providerLinode, providerGCP, providerAzure, providerHyperv, providerLibvirt, providerVZ)
 	}
 }
 
@@ -555,6 +570,22 @@ func (a *app) providerSecretData(provider string) map[string]string {
 			URI:           a.cfg.Libvirt.URI,
 			ControllerURI: a.cfg.Libvirt.ControllerURI,
 		})}
+	case providerVZ:
+		// The in-cluster Cluster API vz controller reaches the same capvz-daemon
+		// klotho dialed; hand it the daemon's gRPC endpoint and bearer token.
+		// The CA is delivered separately (the controller's --vz-daemon-ca, or the
+		// system roots), not as a substituted variable.
+		v := a.cfg.VZ
+		data := map[string]string{}
+		if v.Endpoint != "" {
+			data["VZ_DAEMON_ENDPOINT"] = v.Endpoint
+		}
+		if v.Token != "" {
+			data["VZ_DAEMON_TOKEN"] = v.Token
+		}
+		if len(data) > 0 {
+			return data
+		}
 	}
 	return nil
 }
@@ -600,6 +631,11 @@ type libvirtInfra struct{ *libvirtprovider.Provider }
 
 func (libvirtInfra) Tag(cluster string) string { return libvirtprovider.Tag(cluster) }
 
+// vzInfra adds the provider's tag convention to the vz provider.
+type vzInfra struct{ *vzprovider.Provider }
+
+func (vzInfra) Tag(cluster string) string { return vzprovider.Tag(cluster) }
+
 // kubeadmProvider adds the kubeadm provider's bootstrap machine naming.
 type kubeadmProvider struct{ *kubeadm.Provider }
 
@@ -615,6 +651,7 @@ var (
 	_ klotho.Tagger = azureInfra{}
 	_ klotho.Tagger = hypervInfra{}
 	_ klotho.Tagger = libvirtInfra{}
+	_ klotho.Tagger = vzInfra{}
 	// libvirt's MachineTemplate has no tags field (the CRD rejects the default
 	// spec.template.spec.tags); it tags via the domain description instead.
 	_ klotho.MachineTemplateTagger = libvirtInfra{}
@@ -627,6 +664,7 @@ var (
 	_ infrastructure.Provider      = azureInfra{}
 	_ infrastructure.Provider      = hypervInfra{}
 	_ infrastructure.Provider      = libvirtInfra{}
+	_ infrastructure.Provider      = vzInfra{}
 )
 
 func firstNonEmpty(s ...string) string {

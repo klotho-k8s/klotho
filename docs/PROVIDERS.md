@@ -109,11 +109,21 @@ so no deletion sidecar is needed. Build + unit green; **not run live here** (no 
 the dev environment). See `provider/infrastructure/libvirt/TESTING.md` for a WSL2 nested-KVM
 runbook and a remote `qemu+tls` (Proxmox Linux VM) alternative.
 
-### Apple Virtualization (CAPVZ) — scaffold
+### Apple Virtualization (CAPVZ) — experimental
 See [cluster-api-provider-vz](https://github.com/klotho-k8s/cluster-api-provider-vz). A
-host-side gRPC daemon supervises one `capvz-runner` process per VM (launchd-managed), so
-the daemon can restart without killing VMs. macOS/Apple-Silicon only; not yet integrated
-into a klotho adapter.
+host-side gRPC daemon (`capvz-daemon`) supervises one `capvz-runner` process per VM
+(launchd-managed), so the daemon can restart without killing VMs. macOS/Apple-Silicon only.
+Adopts node zero by name: klotho boots a `<cluster>-bootstrap` vz VM through the daemon (the
+daemon copies a raw arm64 base image and builds a NoCloud cidata seed on the Mac from the
+bootstrap user-data klotho sends over `AttachCloudInit`), and the Cluster API vz provider
+adopts it by `spec.vmName`. klotho reaches the daemon over gRPC with TLS and a bearer token
+(the same transport the in-cluster controller uses), in a pure-Go client with no cgo. vz has
+no load balancer, so the endpoint is node zero's own address (`CONTROL_PLANE_ENDPOINT_HOST`),
+and `providerID` is `vz://<host>/<vmid>`. Because the daemon runs on the host, not inside the
+cluster, teardown is the clean external finisher — klotho's own `Teardown` force-stops and
+removes the VMs through the daemon (the base image is untouched), so no deletion sidecar is
+needed. Build + unit green on any OS (pure Go); **not yet run live** (needs an Apple-Silicon
+Mac). See `provider/infrastructure/vz/TESTING.md` for the Mac build/sign/run steps.
 
 ## Help wanted — test on your environment
 
