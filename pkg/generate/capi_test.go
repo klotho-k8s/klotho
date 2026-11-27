@@ -95,8 +95,57 @@ func TestProviderObjectsComponentsConfigMap(t *testing.T) {
 	if !strings.Contains(data["components"], "caphv-system") {
 		t.Errorf("ConfigMap data.components = %q", data["components"])
 	}
-	if !strings.Contains(data["metadata"], "releaseSeries") || !strings.Contains(data["metadata"], "contract: v1beta1") {
+	if !strings.Contains(data["metadata"], "releaseSeries") || !strings.Contains(data["metadata"], "contract: v1beta2") {
 		t.Errorf("synthesized ConfigMap data.metadata = %q", data["metadata"])
+	}
+}
+
+func TestProviderObjectsEmbeddedComponents(t *testing.T) {
+	// An unpublished infra provider AND a local CAPI mirror both served over
+	// http: each provider is served from a labeled ConfigMap via
+	// fetchConfig.selector, not a URL the in-cluster operator would reject.
+	objs, err := ProviderObjects(CAPIOptions{
+		Version:                    "v1.12.9",
+		CoreComponentsData:         "core: yaml",
+		BootstrapComponentsData:    "bootstrap: yaml",
+		ControlPlaneComponentsData: "controlplane: yaml",
+		CAPIMetadata:               "capi: metadata",
+		InfraProviderName:          "libvirt",
+		InfraProviderVersion:       "v0.1.0",
+		InfraComponents:            "infra: yaml",
+		InfraMetadata:              "infra: metadata",
+		InfraImage:                 "ghcr.io/klotho-k8s/cluster-api-provider-libvirt:sha-39126d4",
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	y, _ := RenderYAML(objs)
+	for _, want := range []string{
+		// Every provider is served via a selector, never a URL.
+		"selector:",
+		"provider.cluster.x-k8s.io/name: cluster-api",
+		"provider.cluster.x-k8s.io/name: kubeadm",
+		"provider.cluster.x-k8s.io/name: libvirt",
+		"provider.cluster.x-k8s.io/type: core",
+		"provider.cluster.x-k8s.io/type: infrastructure",
+		"provider.cluster.x-k8s.io/version: v1.12.9",
+		"provider.cluster.x-k8s.io/version: v0.1.0",
+		// The components land in ConfigMaps in each provider's namespace.
+		"kind: ConfigMap",
+		"name: cluster-api-core-components-v1.12.9",
+		"name: libvirt-infrastructure-components-v0.1.0",
+		"components: 'infra: yaml'",
+		"metadata: 'capi: metadata'",
+		// The manager image override still flows through.
+		"imageUrl: ghcr.io/klotho-k8s/cluster-api-provider-libvirt:sha-39126d4",
+	} {
+		if !strings.Contains(string(y), want) {
+			t.Errorf("missing %q in\n%s", want, y)
+		}
+	}
+	// Nothing is fetched by URL when every provider is embedded.
+	if strings.Contains(string(y), "url: http") {
+		t.Errorf("no url fetch expected when components are embedded:\n%s", y)
 	}
 }
 
