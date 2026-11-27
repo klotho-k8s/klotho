@@ -172,6 +172,9 @@ type Config struct {
 	Hyperv            Hyperv     `json:"hyperv,omitempty"`
 	Libvirt           Libvirt    `json:"libvirt,omitempty"`
 	CAPI              CAPI       `json:"capi,omitempty"`
+	// K0smotron configures the k0smotron bootstrap and control-plane providers
+	// installed for --control-plane k0s. Empty fields use built-in defaults.
+	K0smotron K0smotron `json:"k0smotron,omitempty"`
 	// Nodes configures what every node of a generated cluster does at boot.
 	Nodes Nodes `json:"nodes,omitempty"`
 	// Providers pins infrastructure provider releases by provider name.
@@ -779,6 +782,21 @@ type CAPI struct {
 	OperatorURL    string          `json:"operatorURL,omitempty"`
 	CertManagerURL string          `json:"certManagerURL,omitempty"`
 	CNIManifestURL string          `json:"cniManifestURL,omitempty"`
+}
+
+// K0smotron pins the k0smotron (k0s) bootstrap and control-plane provider
+// release the Cluster API operator installs for --control-plane k0s. Empty
+// fields fall back to the k0s provider's built-in defaults.
+type K0smotron struct {
+	// Version is the k0smotron release, e.g. v2.3.1.
+	Version string `json:"version,omitempty"`
+	// Namespace is where the k0smotron providers run (default k0smotron).
+	Namespace string `json:"namespace,omitempty"`
+	// BootstrapURL and ControlPlaneURL override the components manifests the
+	// in-cluster operator fetches. Empty derives them from the release assets
+	// for Version.
+	BootstrapURL    string `json:"bootstrapURL,omitempty"`
+	ControlPlaneURL string `json:"controlPlaneURL,omitempty"`
 }
 
 // Provider pins an infrastructure provider release.

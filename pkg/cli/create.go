@@ -17,7 +17,7 @@ import (
 	"github.com/klotho-k8s/klotho/pkg/config"
 	"github.com/klotho-k8s/klotho/pkg/credential"
 	"github.com/klotho-k8s/klotho/pkg/generate"
-	"github.com/klotho-k8s/klotho/provider/controlplane/kubeadm"
+	"github.com/klotho-k8s/klotho/provider/controlplane/k0s"
 )
 
 func newCreateCommand() *cli.Command {
@@ -35,7 +35,7 @@ func newCreateCommand() *cli.Command {
 			&cli.StringFlag{
 				Name:    "control-plane",
 				Aliases: []string{"c"},
-				Usage:   "control plane provider (kubeadm)",
+				Usage:   "control plane provider (kubeadm, k0s)",
 				Value:   cpKubeadm,
 			},
 			&cli.StringFlag{
@@ -116,8 +116,8 @@ func runCreate(ctx context.Context, c *cli.Command) error {
 	if provider != providerProxmox && provider != providerDocker && provider != providerAWS && provider != providerLinode && provider != providerGCP && provider != providerAzure && provider != providerHyperv && provider != providerLibvirt {
 		return fmt.Errorf("create: infrastructure provider %q: %w (available: %s, %s, %s, %s, %s, %s, %s, %s)", provider, ErrNotImplemented, providerProxmox, providerDocker, providerAWS, providerLinode, providerGCP, providerAzure, providerHyperv, providerLibvirt)
 	}
-	if cp != cpKubeadm {
-		return fmt.Errorf("create: control plane provider %q: %w (available: %s)", cp, ErrNotImplemented, cpKubeadm)
+	if cp != cpKubeadm && cp != cpK0s {
+		return fmt.Errorf("create: control plane provider %q: %w (available: %s, %s)", cp, ErrNotImplemented, cpKubeadm, cpK0s)
 	}
 	vars, err := parseVars(c.StringSlice("var"))
 	if err != nil {
@@ -143,7 +143,7 @@ func runCreate(ctx context.Context, c *cli.Command) error {
 	if kubeVersion == "" {
 		kubeVersion = firstNonEmpty(vars[generate.VarKubernetesVersion], a.cfg.Variables[generate.VarKubernetesVersion])
 	}
-	deps, err := a.withProviders(provider, cp, kubeadm.Options{KubernetesVersion: kubeVersion})
+	deps, err := a.withProviders(provider, cp, kubeVersion)
 	if err != nil {
 		return err
 	}
@@ -191,6 +191,12 @@ func runCreate(ctx context.Context, c *cli.Command) error {
 	if provider == providerProxmox && a.cfg.Proxmox.Template.Selects() {
 		req.MachineTemplateTags = a.cfg.Proxmox.Template.Tags
 		req.MachineTemplateMatchPolicy = a.cfg.Proxmox.Template.MatchPolicy
+	}
+	// For k0s, the operator installs the k0smotron bootstrap and control-plane
+	// providers instead of the kubeadm ones (the kubeadm defaults otherwise).
+	if cp == cpK0s {
+		km := a.cfg.K0smotron
+		req.CAPI.Bootstrap, req.CAPI.ControlPlane = k0s.CAPIProviders(km.Version, km.Namespace, km.BootstrapURL, km.ControlPlaneURL)
 	}
 
 	st, err := klotho.Create(ctx, deps, req)

@@ -21,6 +21,7 @@ import (
 	proxmoxbackend "github.com/klotho-k8s/klotho/provider/backend/proxmox"
 	s3backend "github.com/klotho-k8s/klotho/provider/backend/s3"
 	"github.com/klotho-k8s/klotho/provider/controlplane"
+	"github.com/klotho-k8s/klotho/provider/controlplane/k0s"
 	"github.com/klotho-k8s/klotho/provider/controlplane/kubeadm"
 	"github.com/klotho-k8s/klotho/provider/infrastructure"
 	awsprovider "github.com/klotho-k8s/klotho/provider/infrastructure/aws"
@@ -46,6 +47,7 @@ const (
 	providerHyperv  = "hyperv"
 	providerLibvirt = "libvirt"
 	cpKubeadm       = "kubeadm"
+	cpK0s           = "k0s"
 )
 
 // app is what every command builds first: configuration, codec, store,
@@ -225,23 +227,36 @@ func (a *app) deps() klotho.Deps {
 }
 
 // withProviders adds the infrastructure and control plane providers.
-func (a *app) withProviders(provider, cp string, cpOpts kubeadm.Options) (klotho.Deps, error) {
+// kubeVersion is the fallback Kubernetes version for a control plane object
+// that does not set one; it is empty for operations (delete) that do not need
+// it.
+func (a *app) withProviders(provider, cp, kubeVersion string) (klotho.Deps, error) {
 	d := a.deps()
 	infra, err := a.infra(provider)
 	if err != nil {
 		return d, err
 	}
+	// CAPD runs the control plane inside containers, where kube-proxy cannot
+	// write the conntrack sysctls; the provider disables those writes.
+	containerNodes := provider == providerDocker
 	switch cp {
 	case cpKubeadm:
-		cpOpts.CertManagerURL = firstNonEmpty(cpOpts.CertManagerURL, a.cfg.CAPI.CertManagerURL)
-		cpOpts.OperatorURL = firstNonEmpty(cpOpts.OperatorURL, a.cfg.CAPI.OperatorURL)
-		cpOpts.CNIManifestURL = firstNonEmpty(cpOpts.CNIManifestURL, a.cfg.CAPI.CNIManifestURL)
-		// CAPD runs the control plane inside containers, where kube-proxy
-		// cannot write the conntrack sysctls; have kubeadm disable those writes.
-		cpOpts.ContainerNodes = provider == providerDocker
-		d.ControlPlane = kubeadmProvider{kubeadm.New(cpOpts)}
+		d.ControlPlane = kubeadmProvider{kubeadm.New(kubeadm.Options{
+			KubernetesVersion: kubeVersion,
+			CertManagerURL:    a.cfg.CAPI.CertManagerURL,
+			OperatorURL:       a.cfg.CAPI.OperatorURL,
+			CNIManifestURL:    a.cfg.CAPI.CNIManifestURL,
+			ContainerNodes:    containerNodes,
+		})}
+	case cpK0s:
+		d.ControlPlane = k0sProvider{k0s.New(k0s.Options{
+			KubernetesVersion: kubeVersion,
+			CertManagerURL:    a.cfg.CAPI.CertManagerURL,
+			OperatorURL:       a.cfg.CAPI.OperatorURL,
+			ContainerNodes:    containerNodes,
+		})}
 	default:
-		return d, fmt.Errorf("control plane provider %q: %w (available: %s)", cp, ErrNotImplemented, cpKubeadm)
+		return d, fmt.Errorf("control plane provider %q: %w (available: %s, %s)", cp, ErrNotImplemented, cpKubeadm, cpK0s)
 	}
 	d.Infra = infra
 	return d, nil
@@ -607,6 +622,13 @@ func (kubeadmProvider) BootstrapMachineName(cluster string) string {
 	return kubeadm.BootstrapMachineName(cluster)
 }
 
+// k0sProvider adds the k0s provider's bootstrap machine naming.
+type k0sProvider struct{ *k0s.Provider }
+
+func (k0sProvider) BootstrapMachineName(cluster string) string {
+	return k0s.BootstrapMachineName(cluster)
+}
+
 var (
 	_ klotho.Tagger = proxmoxInfra{}
 	_ klotho.Tagger = awsInfra{}
@@ -619,7 +641,9 @@ var (
 	// spec.template.spec.tags); it tags via the domain description instead.
 	_ klotho.MachineTemplateTagger = libvirtInfra{}
 	_ klotho.BootstrapNamer        = kubeadmProvider{}
+	_ klotho.BootstrapNamer        = k0sProvider{}
 	_ controlplane.Provider        = kubeadmProvider{}
+	_ controlplane.Provider        = k0sProvider{}
 	_ infrastructure.Provider      = proxmoxInfra{}
 	_ infrastructure.Provider      = awsInfra{}
 	_ infrastructure.Provider      = linodeInfra{}
