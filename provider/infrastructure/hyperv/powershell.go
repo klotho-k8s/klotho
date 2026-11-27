@@ -136,6 +136,14 @@ func stopVMScript(name string, turnOff bool) string {
 
 // removeVMScript stops and deletes the VM and its disks; a missing VM is a
 // no-op.
+//
+// A just force-stopped VM's disk stays locked by its worker process (vmwp.exe)
+// for a brief window after Remove-VM returns, so deleting the VHDX immediately
+// races that handle. A bare "Remove-Item -Force" loses that race as a
+// non-terminating error, which the invocation swallows: the VM unregisters but
+// its multi-GB disk is left behind as a silent orphan. Retry the delete until
+// the handle is released, and throw if it never is, so the orphan surfaces as a
+// delete failure instead of silently accumulating on disk.
 func removeVMScript(name string) string {
 	var b strings.Builder
 	b.WriteString("$vm = Get-VM -Name " + psQuote(name) + " -ErrorAction SilentlyContinue\n")
@@ -143,7 +151,16 @@ func removeVMScript(name string) string {
 	b.WriteString("  if ($vm.State -ne 'Off') { Stop-VM -Name " + psQuote(name) + " -TurnOff -Force }\n")
 	b.WriteString("  $disks = (Get-VMHardDiskDrive -VMName " + psQuote(name) + ").Path\n")
 	b.WriteString("  Remove-VM -Name " + psQuote(name) + " -Force\n")
-	b.WriteString("  foreach ($p in $disks) { if ($p -and (Test-Path -LiteralPath $p)) { Remove-Item -LiteralPath $p -Force } }\n")
+	b.WriteString("  foreach ($p in $disks) {\n")
+	b.WriteString("    if ($p -and (Test-Path -LiteralPath $p)) {\n")
+	b.WriteString("      $removed = $false\n")
+	b.WriteString("      for ($i = 0; $i -lt 20; $i++) {\n")
+	b.WriteString("        try { Remove-Item -LiteralPath $p -Force -ErrorAction Stop; $removed = $true; break }\n")
+	b.WriteString("        catch { Start-Sleep -Milliseconds 500 }\n")
+	b.WriteString("      }\n")
+	b.WriteString("      if (-not $removed) { throw \"failed to remove disk $p: still locked after the VM was stopped\" }\n")
+	b.WriteString("    }\n")
+	b.WriteString("  }\n")
 	b.WriteString("}")
 	return b.String()
 }
