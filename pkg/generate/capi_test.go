@@ -1,6 +1,10 @@
 package generate
 
 import (
+	"bytes"
+	"compress/gzip"
+	"encoding/base64"
+	"io"
 	"strings"
 	"testing"
 
@@ -146,6 +150,46 @@ func TestProviderObjectsEmbeddedComponents(t *testing.T) {
 	// Nothing is fetched by URL when every provider is embedded.
 	if strings.Contains(string(y), "url: http") {
 		t.Errorf("no url fetch expected when components are embedded:\n%s", y)
+	}
+}
+
+func TestComponentsConfigMapCompression(t *testing.T) {
+	// A components payload over the 1 MiB ConfigMap limit (as the real CAPI
+	// core-components.yaml is) must be gzip-compressed into binaryData with the
+	// compressed annotation, so it fits and the operator gunzips it.
+	big := strings.Repeat("apiVersion: v1\nkind: ConfigMap\n---\n", 60000) // ~2 MiB
+	if len(big) <= maxConfigMapBytes {
+		t.Fatalf("test payload %d is not over the limit", len(big))
+	}
+	cm := componentsConfigMap("cluster-api", CoreProviderType, "v1.12.9", "capi-system", big, "capi: metadata")
+	anns, _, _ := unstructured.NestedStringMap(cm.Object, "metadata", "annotations")
+	if anns[CompressedAnnotation] != "true" {
+		t.Fatalf("missing compressed annotation, got %v", anns)
+	}
+	if _, found, _ := unstructured.NestedString(cm.Object, "data", "components"); found {
+		t.Error("compressed components must not be in data")
+	}
+	if v, _, _ := unstructured.NestedString(cm.Object, "data", "metadata"); v != "capi: metadata" {
+		t.Errorf("metadata should stay plaintext, got %q", v)
+	}
+	b64, found, _ := unstructured.NestedString(cm.Object, "binaryData", "components")
+	if !found {
+		t.Fatal("compressed components must be in binaryData")
+	}
+	gz, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		t.Fatalf("binaryData not base64: %v", err)
+	}
+	if len(gz) > maxConfigMapBytes {
+		t.Errorf("compressed payload %d still over the limit", len(gz))
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(gz))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(zr)
+	if string(got) != big {
+		t.Error("gunzip did not round-trip the components")
 	}
 }
 

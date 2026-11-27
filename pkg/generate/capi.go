@@ -1,6 +1,9 @@
 package generate
 
 import (
+	"bytes"
+	"compress/gzip"
+	"encoding/base64"
 	"fmt"
 	"slices"
 	"sort"
@@ -56,6 +59,13 @@ const (
 	ProviderNameLabel    = "provider.cluster.x-k8s.io/name"
 	ProviderTypeLabel    = "provider.cluster.x-k8s.io/type"
 	ProviderVersionLabel = "provider.cluster.x-k8s.io/version"
+	// CompressedAnnotation marks a components ConfigMap whose components are
+	// gzip-compressed in binaryData rather than plaintext in data. The Cluster
+	// API operator reads binaryData["components"] and gunzips it when this is
+	// "true" (its getComponentsData). Used for components that would exceed the
+	// Kubernetes ConfigMap size limit uncompressed (the CAPI core components).
+	CompressedAnnotation = "provider.cluster.x-k8s.io/compressed"
+	compressedValue      = "true"
 
 	// Operator provider-type label values, by provider role.
 	CoreProviderType           = "core"
@@ -63,6 +73,11 @@ const (
 	ControlPlaneProviderType   = "control-plane"
 	InfrastructureProviderType = "infrastructure"
 )
+
+// maxConfigMapBytes is the Kubernetes ConfigMap size limit (1 MiB). Components
+// (plus metadata) over it are gzip-compressed into binaryData, mirroring the
+// operator's own needToCompress threshold.
+const maxConfigMapBytes = 1024 * 1024
 
 // CAPIOptions configure the Cluster API providers the operator installs on
 // the new cluster.
@@ -337,22 +352,42 @@ func componentsConfigMap(name, ptype, version, ns, components, meta string) *uns
 	if meta == "" {
 		meta = syntheticMetadata(version)
 	}
-	return &unstructured.Unstructured{Object: map[string]any{
+	metadata := map[string]any{
+		"name":      name + "-" + ptype + "-components-" + version,
+		"namespace": ns,
+		"labels": map[string]any{
+			ProviderNameLabel:    name,
+			ProviderTypeLabel:    ptype,
+			ProviderVersionLabel: version,
+		},
+	}
+	obj := map[string]any{
 		"apiVersion": "v1", "kind": "ConfigMap",
-		"metadata": map[string]any{
-			"name":      name + "-" + ptype + "-components-" + version,
-			"namespace": ns,
-			"labels": map[string]any{
-				ProviderNameLabel:    name,
-				ProviderTypeLabel:    ptype,
-				ProviderVersionLabel: version,
-			},
-		},
-		"data": map[string]any{
-			"metadata":   meta,
-			"components": components,
-		},
-	}}
+		"metadata": metadata,
+		// metadata.yaml is small and always stored plaintext, even when the
+		// components are compressed (the operator never decompresses it).
+		"data": map[string]any{"metadata": meta},
+	}
+	// Components over the ConfigMap size limit are gzip-compressed into
+	// binaryData, with the compressed annotation the operator keys on; smaller
+	// ones stay plaintext in data. The unstructured value is the base64 of the
+	// gzip bytes, which is how a []byte binaryData value serializes to the API.
+	if len(meta)+len(components) > maxConfigMapBytes {
+		metadata["annotations"] = map[string]any{CompressedAnnotation: compressedValue}
+		obj["binaryData"] = map[string]any{"components": base64.StdEncoding.EncodeToString(gzipBytes([]byte(components)))}
+	} else {
+		obj["data"].(map[string]any)["components"] = components
+	}
+	return &unstructured.Unstructured{Object: obj}
+}
+
+// gzipBytes returns b gzip-compressed.
+func gzipBytes(b []byte) []byte {
+	var buf bytes.Buffer
+	w := gzip.NewWriter(&buf)
+	_, _ = w.Write(b)
+	_ = w.Close()
+	return buf.Bytes()
 }
 
 // syntheticMetadata returns a minimal clusterctl Metadata for version, used when
