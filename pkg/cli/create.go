@@ -182,6 +182,9 @@ func runCreate(ctx context.Context, c *cli.Command) error {
 	if err := a.embedLocalComponents(ctx, c, &req.CAPI); err != nil {
 		return err
 	}
+	if req.Hooks, err = a.cfg.HookSpecs(); err != nil {
+		return err
+	}
 	if d := c.Duration("wait-timeout"); d > 0 {
 		req.Timeouts = klotho.Timeouts{APIServer: d, Providers: d, Apply: d, Node: d}
 	}

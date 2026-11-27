@@ -77,6 +77,9 @@ func newDeleteCommand() *cli.Command {
 				Force:        c.Bool("force"),
 				WatchTimeout: c.Duration("watch-timeout"),
 			}
+			if opts.Hooks, err = a.cfg.HookSpecs(); err != nil {
+				return err
+			}
 			if !c.Bool("yes") {
 				opts.Confirm = func(p *infrastructure.Plan) bool { return confirm(c, name, p) }
 			}

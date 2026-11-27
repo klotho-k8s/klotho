@@ -39,6 +39,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/klotho-k8s/klotho/pkg/generate"
+	"github.com/klotho-k8s/klotho/pkg/hooks"
 	"github.com/klotho-k8s/klotho/pkg/state"
 )
 
@@ -164,6 +165,10 @@ type Config struct {
 	// Variables are default template variables, below anything the user or
 	// the provider sets.
 	Variables map[string]string `json:"variables,omitempty"`
+	// Hooks are the consumer's lifecycle hooks: their own actions to run
+	// against the booted cluster at fixed moments (see Hook). klotho ships no
+	// default hooks and installs nothing; a hook is entirely the consumer's.
+	Hooks []Hook `json:"hooks,omitempty"`
 	// Profiles are named overrides merged over the top level.
 	Profiles map[string]json.RawMessage `json:"profiles,omitempty"`
 
@@ -743,6 +748,206 @@ type Provider struct {
 	Image string `json:"image,omitempty"`
 }
 
+// Hook is one lifecycle hook from the configuration: an action the consumer
+// runs against the booted cluster at a fixed moment. klotho validates and
+// dispatches it but has no opinion about what it does.
+type Hook struct {
+	// Name identifies the hook in logs and errors. Required.
+	Name string `json:"name"`
+	// Event is when the hook fires: postPivot (the cluster is self-managed and
+	// healthy) or preDelete (before teardown). Required. See hooks.Events.
+	Event string `json:"event"`
+	// Type is how klotho runs the hook: exec (run a command) or apply (apply a
+	// manifest). Empty means exec.
+	Type string `json:"type,omitempty"`
+	// Command and Args are the exec command line (type exec).
+	Command string   `json:"command,omitempty"`
+	Args    []string `json:"args,omitempty"`
+	// Manifest is an apply source: a file, a directory of YAML, or an http(s)
+	// URL (type apply). An apply hook sets manifest or helm, not both.
+	Manifest string `json:"manifest,omitempty"`
+	// Helm is an apply source: a Helm release to install or upgrade (type
+	// apply). An apply hook sets manifest or helm, not both.
+	Helm *HelmHook `json:"helm,omitempty"`
+	// Timeout bounds the hook, as a Go duration such as 10m. Empty means no
+	// klotho-imposed bound.
+	Timeout string `json:"timeout,omitempty"`
+	// OnFailure is fail (abort the operation; the default) or warn (log and
+	// continue).
+	OnFailure string `json:"onFailure,omitempty"`
+}
+
+// HelmHook is the helm sub-object of an apply hook: a Helm release klotho
+// installs or upgrades against the booted cluster.
+type HelmHook struct {
+	// Chart is the chart reference: a repository path (such as "stable/nginx",
+	// which requires a configured repository), an "oci://" reference, a
+	// packaged-chart URL, or a local path. Required.
+	Chart string `json:"chart"`
+	// Version is the chart version. Empty means the latest found.
+	Version string `json:"version,omitempty"`
+	// Namespace is the release namespace. Empty means "default"; klotho creates
+	// it if it does not exist.
+	Namespace string `json:"namespace,omitempty"`
+	// ReleaseName names the release. Empty derives it from the chart name.
+	ReleaseName string `json:"releaseName,omitempty"`
+	// Values is either a local values-file path (a string) or an inline values
+	// mapping (an object). Optional.
+	Values json.RawMessage `json:"values,omitempty"`
+}
+
+// HookSpecs converts the configured hooks into the resolved form the library
+// runs, parsing timeouts and defaulting the type to exec and the policy to
+// fail. Load has already validated the values.
+func (c *Config) HookSpecs() ([]hooks.Hook, error) {
+	if len(c.Hooks) == 0 {
+		return nil, nil
+	}
+	out := make([]hooks.Hook, 0, len(c.Hooks))
+	for _, h := range c.Hooks {
+		typ := hooks.Type(h.Type)
+		if typ == "" {
+			typ = hooks.Exec
+		}
+		policy := hooks.Policy(h.OnFailure)
+		if policy == "" {
+			policy = hooks.Fail
+		}
+		var timeout time.Duration
+		if h.Timeout != "" {
+			d, err := time.ParseDuration(h.Timeout)
+			if err != nil {
+				return nil, fmt.Errorf("config: hook %q: timeout %q: %w", h.Name, h.Timeout, err)
+			}
+			timeout = d
+		}
+		helmSpec, err := h.helmSpec()
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, hooks.Hook{
+			Name:      h.Name,
+			Event:     hooks.Event(h.Event),
+			Type:      typ,
+			Command:   h.Command,
+			Args:      h.Args,
+			Manifest:  h.Manifest,
+			Helm:      helmSpec,
+			Timeout:   timeout,
+			OnFailure: policy,
+		})
+	}
+	return out, nil
+}
+
+// helmSpec resolves the hook's helm sub-object into the library form, parsing
+// the polymorphic values field: a JSON string is a local values-file path, a
+// JSON object is an inline values mapping.
+func (h Hook) helmSpec() (*hooks.HelmSpec, error) {
+	if h.Helm == nil {
+		return nil, nil
+	}
+	spec := &hooks.HelmSpec{
+		Chart:       h.Helm.Chart,
+		Version:     h.Helm.Version,
+		Namespace:   h.Helm.Namespace,
+		ReleaseName: h.Helm.ReleaseName,
+	}
+	raw := bytes.TrimSpace(h.Helm.Values)
+	if len(raw) == 0 || string(raw) == "null" {
+		return spec, nil
+	}
+	switch raw[0] {
+	case '"':
+		var file string
+		if err := json.Unmarshal(raw, &file); err != nil {
+			return nil, fmt.Errorf("config: hook %q: helm values: %w", h.Name, err)
+		}
+		spec.ValuesFile = file
+	case '{':
+		var vals map[string]any
+		if err := json.Unmarshal(raw, &vals); err != nil {
+			return nil, fmt.Errorf("config: hook %q: helm values: %w", h.Name, err)
+		}
+		spec.Values = vals
+	default:
+		return nil, fmt.Errorf("config: hook %q: helm values must be a file path (string) or an inline mapping", h.Name)
+	}
+	return spec, nil
+}
+
+// problems lists what is wrong with a hook.
+func (h Hook) problems() []string {
+	var problems []string
+	label := "hooks"
+	if h.Name != "" {
+		label = fmt.Sprintf("hook %q", h.Name)
+	} else {
+		problems = append(problems, "a hook needs a name")
+	}
+	switch {
+	case h.Event == "":
+		problems = append(problems, label+": event is required")
+	case !hooks.Event(h.Event).Valid():
+		problems = append(problems, fmt.Sprintf("%s: event %q is not one of %s", label, h.Event, hookEventList()))
+	}
+	typ := hooks.Type(h.Type)
+	switch {
+	case h.Type == "" || typ == hooks.Exec:
+		if h.Command == "" {
+			problems = append(problems, label+": an exec hook needs a command")
+		}
+		if h.Manifest != "" {
+			problems = append(problems, label+": an exec hook may not set manifest")
+		}
+		if h.Helm != nil {
+			problems = append(problems, label+": an exec hook may not set helm")
+		}
+	case typ == hooks.Apply:
+		hasManifest := h.Manifest != ""
+		hasHelm := h.Helm != nil
+		switch {
+		case !hasManifest && !hasHelm:
+			problems = append(problems, label+": an apply hook needs a manifest or helm")
+		case hasManifest && hasHelm:
+			problems = append(problems, label+": an apply hook sets exactly one of manifest or helm")
+		}
+		if hasHelm && h.Helm.Chart == "" {
+			problems = append(problems, label+": an apply hook's helm needs a chart")
+		}
+		if h.Command != "" || len(h.Args) > 0 {
+			problems = append(problems, label+": an apply hook may not set command or args")
+		}
+	default:
+		problems = append(problems, fmt.Sprintf("%s: type %q is not one of %s", label, h.Type, hookTypeList()))
+	}
+	if !hooks.Policy(h.OnFailure).Valid() {
+		problems = append(problems, fmt.Sprintf("%s: onFailure %q is not one of %s, %s", label, h.OnFailure, hooks.Fail, hooks.Warn))
+	}
+	if h.Timeout != "" {
+		if d, err := time.ParseDuration(h.Timeout); err != nil || d <= 0 {
+			problems = append(problems, fmt.Sprintf("%s: timeout %q must be a positive duration such as 10m", label, h.Timeout))
+		}
+	}
+	return problems
+}
+
+func hookEventList() string {
+	parts := make([]string, 0, len(hooks.Events()))
+	for _, e := range hooks.Events() {
+		parts = append(parts, string(e))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func hookTypeList() string {
+	parts := make([]string, 0, len(hooks.Types()))
+	for _, t := range hooks.Types() {
+		parts = append(parts, string(t))
+	}
+	return strings.Join(parts, ", ")
+}
+
 // Dir returns klotho's configuration directory: $XDG_CONFIG_HOME/klotho, or
 // ~/.config/klotho.
 func Dir() string {
@@ -1033,6 +1238,9 @@ func (c *Config) Validate() error {
 	if err := c.Nodes.InstallOptions().Validate(); err != nil {
 		problems = append(problems, "nodes.cache: "+err.Error())
 	}
+	for _, h := range c.Hooks {
+		problems = append(problems, h.problems()...)
+	}
 	if len(problems) > 0 {
 		return fmt.Errorf("config: %s: %s", c.Path, strings.Join(problems, "; "))
 	}
@@ -1273,6 +1481,34 @@ const Skeleton = `# klotho configuration. Every field is optional; see "klotho -
 #     # image: ghcr.io/<owner>/cluster-api-provider-proxmox:<version>
 # variables:
 #   CONTROL_PLANE_ENDPOINT_IP: 10.0.0.10
+# hooks:                       # your own actions against the booted cluster; klotho installs nothing
+#   - name: flux-bootstrap     # identifies the hook in logs
+#     event: postPivot         # postPivot (cluster is self-managed) | preDelete (before teardown)
+#     type: exec               # exec (run a command) | apply (apply a manifest or install a helm chart)
+#     command: flux            # an exec hook runs with KUBECONFIG and KLOTHO_CLUSTER* set
+#     args: [bootstrap, github, --owner=me, --repository=fleet, --path=clusters/lab]
+#     timeout: 10m             # optional Go duration; empty means unbounded
+#     onFailure: fail          # fail (abort; default) | warn (log and continue)
+#   - name: cni                # an apply hook applies a manifest to the booted cluster
+#     event: postPivot
+#     type: apply
+#     manifest: ./manifests/   # a file, a directory of YAML, or an http(s) URL
+#     timeout: 5m
+#   - name: ingress            # an apply hook can instead install or upgrade a helm release
+#     event: postPivot
+#     type: apply
+#     helm:
+#       chart: oci://ghcr.io/nginx/charts/nginx-ingress  # repo path, oci:// ref, URL, or local path
+#       version: 2.3.0         # optional; empty means the latest
+#       namespace: ingress     # created if absent; empty means default
+#       releaseName: ingress   # optional; empty derives from the chart name
+#       values: ./values.yaml  # a local values file path, or an inline mapping
+#     onFailure: fail
+#   - name: remove-apps
+#     event: preDelete
+#     type: exec
+#     command: ./teardown.sh
+#     onFailure: warn
 # profiles:
 #   lab:
 #     proxmox:
