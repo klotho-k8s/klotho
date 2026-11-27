@@ -188,6 +188,25 @@ virsh -c qemu+tcp://192.168.122.1/system list --all
 the PKI per the Proxmox/`qemu+tls` section below, and use
 `controllerURI: qemu+tls://192.168.122.1/system`.)
 
+**The pod network CIDR must not overlap the libvirt network subnet.** The
+in-cluster controller reaches libvirtd at the bridge gateway `192.168.122.1`. If
+the CNI's pod pool includes that address, the CNI treats `192.168.122.1` as an
+in-cluster pod IP and routes the controller's traffic into the overlay instead
+of out to the host - the controller then hangs with `dial tcp
+192.168.122.1:16509: i/o timeout` and the LibvirtMachine never reconciles. The
+stock Calico pool and the default cluster pod CIDR are **`192.168.0.0/16`, which
+contains `192.168.122.0/24`** - so pick a non-overlapping pod CIDR (for example
+`10.244.0.0/16`) and make the CNI use it:
+
+```bash
+# Create with a non-overlapping pod CIDR:
+klotho create ... --pod-cidr 10.244.0.0/16 lab1
+# and pin the Calico IP pool to match (the stock manifest defaults to
+# 192.168.0.0/16): in the calico.yaml you serve, set
+#   - name: CALICO_IPV4POOL_CIDR
+#     value: "10.244.0.0/16"
+```
+
 ### 6. Serving the CAPI and provider components over http (ConfigMap embedding)
 
 The in-cluster Cluster API **operator** installs each provider from a
