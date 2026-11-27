@@ -55,6 +55,10 @@ metadata:
 spec:
   replicas: ${CONTROL_PLANE_MACHINE_COUNT}
   version: "${KUBERNETES_VERSION}+rke2r1"
+  rolloutStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
   serverConfig:
     # rke2 ships canal by default; declared so klotho renders cni into the node
     # config.yaml. A single-node control plane runs the management stack, so the

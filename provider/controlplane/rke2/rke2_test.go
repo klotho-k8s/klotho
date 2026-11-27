@@ -106,7 +106,7 @@ func TestUserData(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing %s", ConfigPath)
 	}
-	for _, want := range []string{"token:", "- 10.0.0.5", "- demo.example", "cluster-cidr: 192.168.0.0/16", "service-cidr: 10.43.0.0/16", "cni:", "conntrack-max-per-core=0", "fail-swap-on=false"} {
+	for _, want := range []string{"token:", "- 10.0.0.5", "- demo.example", "cluster-cidr: 192.168.0.0/16", "service-cidr: 10.43.0.0/16", "cni:", "conntrack-max-per-core=0", "fail-swap-on=false", "disable-cloud-controller: true", "provider-id=docker:////demo-bootstrap"} {
 		if !strings.Contains(configYAML, want) {
 			t.Errorf("config.yaml missing %q:\n%s", want, configYAML)
 		}

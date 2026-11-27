@@ -325,17 +325,19 @@ func ProviderObjects(o CAPIOptions, redact bool) ([]*unstructured.Unstructured, 
 		// taints as a control plane; a provider whose own manifest lacks
 		// the toleration (CAPMOX does) would never schedule on a cluster
 		// with no workers. The node's taints are left as the user's
-		// configuration made them. The node selector keeps the providers
+		// configuration made them. The node affinity keeps the providers
 		// on control planes once workers exist: deleting a self-managed
 		// cluster removes workers before control planes, so a provider on
 		// a worker would have to be moved first, and an ordered deletion
 		// that waits for the control planes while Cluster API waits for
-		// the workers never finishes.
+		// the workers never finishes. It matches the control-plane label by
+		// existence rather than an exact value, because distributions
+		// disagree on the value (kubeadm and k0s use "", rke2 uses "true").
 		spec := map[string]any{
 			"version": version,
 			"deployment": map[string]any{
-				"tolerations":  controlPlaneTolerations(),
-				"nodeSelector": map[string]any{"node-role.kubernetes.io/control-plane": ""},
+				"tolerations": controlPlaneTolerations(),
+				"affinity":    controlPlaneAffinity(),
 			},
 		}
 		if fetchConfig != nil {
@@ -505,6 +507,28 @@ func conditionTrue(u *unstructured.Unstructured, condType string) (bool, string)
 		return false, strings.TrimSpace(reason + " " + msg)
 	}
 	return false, "no " + condType + " condition yet"
+}
+
+// controlPlaneAffinity requires a management component to schedule onto a
+// control plane node, identified by the presence of the control-plane role
+// label regardless of its value (kubeadm and k0s label it "", rke2 "true").
+func controlPlaneAffinity() map[string]any {
+	return map[string]any{
+		"nodeAffinity": map[string]any{
+			"requiredDuringSchedulingIgnoredDuringExecution": map[string]any{
+				"nodeSelectorTerms": []any{
+					map[string]any{
+						"matchExpressions": []any{
+							map[string]any{
+								"key":      "node-role.kubernetes.io/control-plane",
+								"operator": "Exists",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
 }
 
 // controlPlaneTolerations lets a management component run on control plane

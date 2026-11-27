@@ -58,7 +58,7 @@ func (p *Provider) UserData(_ context.Context, spec *cluster.Spec, creds *contro
 
 	// The rke2 server config, with the control plane endpoint, cluster token
 	// and networking injected.
-	configYAML, err := p.configYAML(rcp, ep, nw, token)
+	configYAML, err := p.configYAML(rcp, ep, nw, token, BootstrapMachineName(spec.Name))
 	if err != nil {
 		return nil, err
 	}
@@ -100,10 +100,17 @@ func (p *Provider) UserData(_ context.Context, spec *cluster.Spec, creds *contro
 // configYAML renders node zero's /etc/rancher/rke2/config.yaml. The absence of
 // a "server" key makes rke2 the cluster-init server, as the RKE2 bootstrap
 // provider's init config does. The token is fixed so the seeded <name>-token
-// Secret, which later joiners read, matches node zero. For container nodes
-// (CAPD) kube-proxy's conntrack sysctl writes and the kubelet's swap check are
-// disabled, exactly as the kubeadm provider does for kind nodes.
-func (p *Provider) configYAML(rcp *controlPlane, ep cluster.Endpoint, nw network, token string) ([]byte, error) {
+// Secret, which later joiners read, matches node zero.
+//
+// For container nodes (CAPD): kube-proxy's conntrack sysctl writes and the
+// kubelet's swap check are disabled, exactly as the kubeadm provider does for
+// kind nodes. rke2's embedded cloud-controller is disabled and the kubelet is
+// given an explicit provider-id of docker:////<node>, because CAPD links the
+// adopted Machine to its Node by that provider ID (the node name equals the
+// container name); left to run, rke2's cloud-controller sets providerID
+// rke2://<node>, which never matches the DockerMachine and is immutable once
+// written, so the Machine would never get a nodeRef.
+func (p *Provider) configYAML(rcp *controlPlane, ep cluster.Endpoint, nw network, token, nodeName string) ([]byte, error) {
 	cfg := map[string]any{"token": token}
 
 	sans := []string{ep.Host, "127.0.0.1", "localhost"}
@@ -155,7 +162,15 @@ func (p *Provider) configYAML(rcp *controlPlane, ep cluster.Endpoint, nw network
 		if _, disabled := cfg["disable-kube-proxy"]; !disabled {
 			cfg["kube-proxy-arg"] = []string{"conntrack-max-per-core=0"}
 		}
-		cfg["kubelet-arg"] = []string{"fail-swap-on=false"}
+		// Disable rke2's cloud-controller so the node is not tainted
+		// uninitialized and so it does not set an rke2:// provider ID; give the
+		// kubelet the CAPD provider ID instead, so the node registers with the
+		// ID CAPD expects from the start.
+		cfg["disable-cloud-controller"] = true
+		cfg["kubelet-arg"] = []string{
+			"fail-swap-on=false",
+			"provider-id=docker:////" + nodeName,
+		}
 	}
 
 	out, err := yaml.Marshal(cfg)

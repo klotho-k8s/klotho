@@ -60,6 +60,10 @@ metadata:
 spec:
   replicas: ${CONTROL_PLANE_MACHINE_COUNT}
   version: "${KUBERNETES_VERSION}+rke2r1"
+  rolloutStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
   serverConfig:
     cni: canal
     tlsSan:

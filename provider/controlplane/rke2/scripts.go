@@ -93,6 +93,8 @@ retry() {
 
 api_ready() { kubectl get --raw=/readyz >/dev/null; }
 
+node_registered() { [ "$(kubectl get nodes --no-headers 2>/dev/null | wc -l)" -ge 1 ]; }
+
 cert_manager_webhook_ready() {
   printf '%s\n' \
     'apiVersion: cert-manager.io/v1' \
@@ -108,22 +110,22 @@ cert_manager_webhook_ready() {
 log "waiting for the API server"
 retry 180 5 api_ready
 
-# rke2 already labels its server nodes node-role.kubernetes.io/control-plane;
-# make sure, so the operator's provider deployments (which select control plane
-# nodes) schedule and the ordered self-managed deletion works.
-log "labelling node zero as a control plane"
-retry 60 5 bash -c 'n="$(kubectl get nodes -o jsonpath={.items[0].metadata.name})"; [ -n "$n" ] && kubectl label node "$n" node-role.kubernetes.io/control-plane= --overwrite'
-{{- if .ContainerNodes }}
+# Wait for node zero to register before touching it; rke2 can answer /readyz
+# before the kubelet has created the Node object.
+log "waiting for node zero to register"
+retry 120 5 node_registered
+NODE="$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)"
+log "node zero is ${NODE}"
 
-# Set node zero's providerID so Cluster API links the adopted Machine to its
-# node. CAPD sets the DockerMachine providerID to docker:////<container>, whose
-# name equals node zero's hostname; rke2's kubelet does not set a providerID on
-# its own. Without this the Machine never gets a status.nodeRef.
-log "setting node zero providerID for CAPD"
-retry 60 5 bash -c 'n="$(kubectl get nodes -o jsonpath={.items[0].metadata.name})"; [ -n "$n" ] && kubectl patch node "$n" --type merge -p "{\"spec\":{\"providerID\":\"docker:////$n\"}}"'
-{{- end }}
+# rke2 already labels its server nodes node-role.kubernetes.io/control-plane
+# (value "true"); klotho's management stack selects that label by existence, so
+# no relabelling is needed. The kubelet already carries the provider ID on
+# container nodes. Defensively clear the cloud-provider uninitialized taint in
+# case it was applied; best-effort, never aborts the bootstrap.
+kubectl taint node "$NODE" node.cloudprovider.kubernetes.io/uninitialized- 2>/dev/null || true
 
-retry 60 10 kubectl wait --for=condition=Ready nodes --all --timeout=10s
+log "waiting for node zero to be Ready"
+retry 120 10 kubectl wait --for=condition=Ready "node/${NODE}" --timeout=10s
 
 log "applying cert-manager"
 retry 30 10 kubectl apply -f {{ .CertManager }}
