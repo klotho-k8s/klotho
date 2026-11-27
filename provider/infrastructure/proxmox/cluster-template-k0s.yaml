@@ -69,8 +69,8 @@ spec:
     preStartCommands:
       # Bind the control plane VIP as a secondary address on the primary
       # interface so node zero answers the endpoint. $(...) and $IFACE are left
-      # untouched by clusterctl (it substitutes only ${UPPERCASE}); the VIP is
-      # substituted at generation time.
+      # untouched by clusterctl, which substitutes only its own UPPERCASE
+      # names; the VIP is substituted at generation time.
       - 'IFACE=$(ip -o -4 route show to default | awk "{print \$5; exit}"); ip addr replace ${CONTROL_PLANE_ENDPOINT_IP}/32 dev "$IFACE" || true'
     k0s:
       apiVersion: k0s.k0sproject.io/v1beta1
