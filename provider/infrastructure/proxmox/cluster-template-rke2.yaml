@@ -1,0 +1,163 @@
+# klotho Cluster API Proxmox (CAPMOX) cluster template, RKE2 control plane.
+#
+# Same Proxmox infrastructure objects as the kubeadm template (ProxmoxCluster,
+# ProxmoxMachineTemplate), but the control plane and worker bootstrap are
+# cluster-api-provider-rke2's RKE2ControlPlane / RKE2ConfigTemplate.
+#
+# The control plane endpoint is the VIP CONTROL_PLANE_ENDPOINT_IP. The kubeadm
+# template serves it with a kube-vip static pod; rke2 runs its control plane as
+# processes, so for a single-node control plane klotho binds the VIP as a
+# secondary address on node zero's primary interface via a preRKE2Command (the
+# RKE2 bootstrap provider runs preRKE2Commands before rke2 starts). klotho also
+# injects the VIP into the rke2 server tls-san and config.
+#
+# rke2 uses its embedded etcd and default CNI (canal). klotho seeds the four
+# rke2 CAs and the cluster token so RKE2ControlPlane adopts node zero with no
+# rollout.
+---
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  labels:
+    cluster.x-k8s.io/cluster-name: '${CLUSTER_NAME}'
+  name: "${CLUSTER_NAME}"
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks: ["192.168.0.0/16"]
+    services:
+      cidrBlocks: ["10.43.0.0/16"]
+  infrastructureRef:
+    apiGroup: infrastructure.cluster.x-k8s.io
+    kind: ProxmoxCluster
+    name: "${CLUSTER_NAME}"
+  controlPlaneRef:
+    kind: RKE2ControlPlane
+    apiGroup: controlplane.cluster.x-k8s.io
+    name: "${CLUSTER_NAME}-control-plane"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
+kind: ProxmoxCluster
+metadata:
+  name: "${CLUSTER_NAME}"
+  labels:
+    cluster.x-k8s.io/cluster-name: "${CLUSTER_NAME}"
+spec:
+  controlPlaneEndpoint:
+    host: ${CONTROL_PLANE_ENDPOINT_IP}
+    port: 6443
+  ipv4Config:
+    addresses: ${NODE_IP_RANGES}
+    prefix: ${IP_PREFIX}
+    gateway: ${GATEWAY}
+  dnsServers: ${DNS_SERVERS}
+  allowedNodes: ${ALLOWED_NODES:=[]}
+---
+apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+kind: RKE2ControlPlane
+metadata:
+  name: "${CLUSTER_NAME}-control-plane"
+spec:
+  replicas: ${CONTROL_PLANE_MACHINE_COUNT}
+  version: "${KUBERNETES_VERSION}+rke2r1"
+  serverConfig:
+    cni: canal
+    tlsSan:
+      - ${CONTROL_PLANE_ENDPOINT_IP}
+  preRKE2Commands:
+    # Bind the control plane VIP as a secondary address on the primary
+    # interface so node zero answers the endpoint. $(...) and $IFACE are left
+    # untouched by clusterctl (it substitutes only ${UPPERCASE}); the VIP is
+    # substituted at generation time.
+    - 'IFACE=$(ip -o -4 route show to default | awk "{print \$5; exit}"); ip addr replace ${CONTROL_PLANE_ENDPOINT_IP}/32 dev "$IFACE" || true'
+  machineTemplate:
+    spec:
+      infrastructureRef:
+        kind: ProxmoxMachineTemplate
+        apiGroup: infrastructure.cluster.x-k8s.io
+        name: "${CLUSTER_NAME}-control-plane"
+---
+kind: ProxmoxMachineTemplate
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
+metadata:
+  name: "${CLUSTER_NAME}-control-plane"
+spec:
+  template:
+    spec:
+      sourceNode: "${PROXMOX_SOURCENODE}"
+      templateID: ${TEMPLATE_VMID}
+      format: "qcow2"
+      full: true
+      numSockets: ${NUM_SOCKETS:=2}
+      numCores: ${NUM_CORES:=4}
+      memoryMiB: ${MEMORY_MIB:=16384}
+      disks:
+        bootVolume:
+          disk: ${BOOT_VOLUME_DEVICE}
+          sizeGb: ${BOOT_VOLUME_SIZE:=100}
+      network:
+        networkDevices:
+        - bridge: ${BRIDGE}
+          model: virtio
+          name: net0
+---
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: MachineDeployment
+metadata:
+  labels:
+    cluster.x-k8s.io/cluster-name: '${CLUSTER_NAME}'
+  name: "${CLUSTER_NAME}-workers"
+spec:
+  clusterName: "${CLUSTER_NAME}"
+  replicas: ${WORKER_MACHINE_COUNT}
+  selector:
+    matchLabels:
+  template:
+    metadata:
+      labels:
+        cluster.x-k8s.io/cluster-name: '${CLUSTER_NAME}'
+        node-role.kubernetes.io/node: ""
+    spec:
+      clusterName: "${CLUSTER_NAME}"
+      version: "${KUBERNETES_VERSION}+rke2r1"
+      bootstrap:
+        configRef:
+          name: "${CLUSTER_NAME}-worker"
+          apiGroup: bootstrap.cluster.x-k8s.io
+          kind: RKE2ConfigTemplate
+      infrastructureRef:
+        name: "${CLUSTER_NAME}-worker"
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: ProxmoxMachineTemplate
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
+kind: ProxmoxMachineTemplate
+metadata:
+  name: "${CLUSTER_NAME}-worker"
+spec:
+  template:
+    spec:
+      sourceNode: "${PROXMOX_SOURCENODE}"
+      templateID: ${TEMPLATE_VMID}
+      format: "qcow2"
+      full: true
+      numSockets: ${NUM_SOCKETS:=2}
+      numCores: ${NUM_CORES:=4}
+      memoryMiB: ${MEMORY_MIB:=16384}
+      disks:
+        bootVolume:
+          disk: ${BOOT_VOLUME_DEVICE}
+          sizeGb: ${BOOT_VOLUME_SIZE:=100}
+      network:
+        networkDevices:
+        - bridge: ${BRIDGE}
+          model: virtio
+          name: net0
+---
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+kind: RKE2ConfigTemplate
+metadata:
+  name: "${CLUSTER_NAME}-worker"
+spec:
+  template:
+    spec: {}

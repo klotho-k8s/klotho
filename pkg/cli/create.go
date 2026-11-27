@@ -18,6 +18,7 @@ import (
 	"github.com/klotho-k8s/klotho/pkg/credential"
 	"github.com/klotho-k8s/klotho/pkg/generate"
 	"github.com/klotho-k8s/klotho/provider/controlplane/k0s"
+	"github.com/klotho-k8s/klotho/provider/controlplane/rke2"
 )
 
 func newCreateCommand() *cli.Command {
@@ -35,7 +36,7 @@ func newCreateCommand() *cli.Command {
 			&cli.StringFlag{
 				Name:    "control-plane",
 				Aliases: []string{"c"},
-				Usage:   "control plane provider (kubeadm, k0s)",
+				Usage:   "control plane provider (kubeadm, k0s, rke2)",
 				Value:   cpKubeadm,
 			},
 			&cli.StringFlag{
@@ -116,8 +117,8 @@ func runCreate(ctx context.Context, c *cli.Command) error {
 	if provider != providerProxmox && provider != providerDocker && provider != providerAWS && provider != providerLinode && provider != providerGCP && provider != providerAzure && provider != providerHyperv && provider != providerLibvirt {
 		return fmt.Errorf("create: infrastructure provider %q: %w (available: %s, %s, %s, %s, %s, %s, %s, %s)", provider, ErrNotImplemented, providerProxmox, providerDocker, providerAWS, providerLinode, providerGCP, providerAzure, providerHyperv, providerLibvirt)
 	}
-	if cp != cpKubeadm && cp != cpK0s {
-		return fmt.Errorf("create: control plane provider %q: %w (available: %s, %s)", cp, ErrNotImplemented, cpKubeadm, cpK0s)
+	if cp != cpKubeadm && cp != cpK0s && cp != cpRKE2 {
+		return fmt.Errorf("create: control plane provider %q: %w (available: %s, %s, %s)", cp, ErrNotImplemented, cpKubeadm, cpK0s, cpRKE2)
 	}
 	flavor := flavorFor(c.String("flavor"), cp)
 	vars, err := parseVars(c.StringSlice("var"))
@@ -198,6 +199,12 @@ func runCreate(ctx context.Context, c *cli.Command) error {
 	if cp == cpK0s {
 		km := a.cfg.K0smotron
 		req.CAPI.Bootstrap, req.CAPI.ControlPlane = k0s.CAPIProviders(km.Version, km.Namespace, km.BootstrapURL, km.ControlPlaneURL)
+	}
+	// For rke2, the operator installs the cluster-api-provider-rke2 bootstrap
+	// and control-plane providers instead of the kubeadm ones.
+	if cp == cpRKE2 {
+		r := a.cfg.RKE2
+		req.CAPI.Bootstrap, req.CAPI.ControlPlane = rke2.CAPIProviders(r.Version, r.BootstrapNamespace, r.ControlPlaneNamespace, r.BootstrapURL, r.ControlPlaneURL)
 	}
 
 	st, err := klotho.Create(ctx, deps, req)
