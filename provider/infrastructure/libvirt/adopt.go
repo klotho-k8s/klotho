@@ -106,6 +106,19 @@ func (p *Provider) Adopt(ctx context.Context, state *cluster.State, bundle []*un
 	return append([]byte("---\n"), out...), nil
 }
 
+// TagMachineTemplates is a no-op for libvirt, implementing klotho's optional
+// MachineTemplateTagger so the orchestrator does not fall back to the default
+// spec.template.spec.tags string list. The LibvirtMachineTemplate CRD has no
+// ownership-tag field, and its strict server-side-apply schema rejects an
+// unknown "tags" field ("field not declared in schema"). libvirt records
+// klotho's cluster tag in each domain's <description> when the domain is created
+// (the bootstrap domain klotho launches carries Tag(cluster)), and Teardown
+// finds klotho's domains by that description tag - so nothing needs to be, or
+// can be, written into the MachineTemplate.
+func (p *Provider) TagMachineTemplates(_ []*unstructured.Unstructured, _ string) error {
+	return nil
+}
+
 // controlPlaneTemplate returns the infrastructure MachineTemplate the control
 // plane references, and the control plane object when there is one.
 func controlPlaneTemplate(b *generate.Bundle) (*unstructured.Unstructured, *unstructured.Unstructured, error) {

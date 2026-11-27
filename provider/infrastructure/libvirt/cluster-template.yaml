@@ -68,7 +68,10 @@ spec:
         kind: LibvirtMachineTemplate
         name: "${CLUSTER_NAME}-control-plane"
   kubeadmConfigSpec:
-    clusterConfiguration: {}
+    # clusterConfiguration is intentionally omitted: the KubeadmControlPlane CRD
+    # rejects an empty object (minProperties 1), and Cluster API injects the
+    # control plane endpoint and defaults itself, so a single-node dev control
+    # plane needs nothing here.
     initConfiguration:
       nodeRegistration:
         criSocket: unix:///var/run/containerd/containerd.sock

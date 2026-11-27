@@ -608,22 +608,25 @@ func (kubeadmProvider) BootstrapMachineName(cluster string) string {
 }
 
 var (
-	_ klotho.Tagger           = proxmoxInfra{}
-	_ klotho.Tagger           = awsInfra{}
-	_ klotho.Tagger           = linodeInfra{}
-	_ klotho.Tagger           = gcpInfra{}
-	_ klotho.Tagger           = azureInfra{}
-	_ klotho.Tagger           = hypervInfra{}
-	_ klotho.Tagger           = libvirtInfra{}
-	_ klotho.BootstrapNamer   = kubeadmProvider{}
-	_ controlplane.Provider   = kubeadmProvider{}
-	_ infrastructure.Provider = proxmoxInfra{}
-	_ infrastructure.Provider = awsInfra{}
-	_ infrastructure.Provider = linodeInfra{}
-	_ infrastructure.Provider = gcpInfra{}
-	_ infrastructure.Provider = azureInfra{}
-	_ infrastructure.Provider = hypervInfra{}
-	_ infrastructure.Provider = libvirtInfra{}
+	_ klotho.Tagger = proxmoxInfra{}
+	_ klotho.Tagger = awsInfra{}
+	_ klotho.Tagger = linodeInfra{}
+	_ klotho.Tagger = gcpInfra{}
+	_ klotho.Tagger = azureInfra{}
+	_ klotho.Tagger = hypervInfra{}
+	_ klotho.Tagger = libvirtInfra{}
+	// libvirt's MachineTemplate has no tags field (the CRD rejects the default
+	// spec.template.spec.tags); it tags via the domain description instead.
+	_ klotho.MachineTemplateTagger = libvirtInfra{}
+	_ klotho.BootstrapNamer        = kubeadmProvider{}
+	_ controlplane.Provider        = kubeadmProvider{}
+	_ infrastructure.Provider      = proxmoxInfra{}
+	_ infrastructure.Provider      = awsInfra{}
+	_ infrastructure.Provider      = linodeInfra{}
+	_ infrastructure.Provider      = gcpInfra{}
+	_ infrastructure.Provider      = azureInfra{}
+	_ infrastructure.Provider      = hypervInfra{}
+	_ infrastructure.Provider      = libvirtInfra{}
 )
 
 func firstNonEmpty(s ...string) string {
