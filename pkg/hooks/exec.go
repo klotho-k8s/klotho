@@ -12,6 +12,7 @@ import (
 	"strconv"
 
 	"github.com/klotho-k8s/klotho/pkg/cluster"
+	"github.com/klotho-k8s/klotho/pkg/kube"
 )
 
 // Environment variables an exec hook receives, on top of the parent process's
@@ -37,15 +38,18 @@ const (
 	EnvContext = "KLOTHO_KUBECONTEXT"
 )
 
-// ErrApplyNotImplemented is returned for an apply hook. The apply type is wired
-// through the configuration and the dispatch, but the engine does not run it
-// yet; an exec hook running "kubectl apply -f" covers the same ground.
-var ErrApplyNotImplemented = errors.New("hooks: the apply type is not implemented yet; use an exec hook that runs kubectl apply")
-
 // Engine is the default Executor. It runs exec hooks as child processes and
-// streams their output into the logger.
+// apply hooks through klotho's own cluster client, streaming progress into the
+// logger.
 type Engine struct {
 	log *slog.Logger
+	// connect builds a cluster client from an admin kubeconfig. It is kube.New
+	// by default; tests substitute a fake.
+	connect func(ctx context.Context, kubeconfig []byte) (kube.Cluster, error)
+	// helmActions builds a Helm action configuration for a namespace against the
+	// kubeconfig at the given path. It is defaultHelmActions by default; tests
+	// substitute an in-memory configuration.
+	helmActions helmActionFactory
 }
 
 // NewEngine returns the default Executor, logging hook output through log.
@@ -53,7 +57,7 @@ func NewEngine(log *slog.Logger) Engine {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return Engine{log: log}
+	return Engine{log: log, connect: kube.New, helmActions: defaultHelmActions}
 }
 
 // Run runs one hook. It is the default Executor implementation.
@@ -62,7 +66,7 @@ func (e Engine) Run(ctx context.Context, h Hook, t Target) error {
 	case Exec, "":
 		return e.runExec(ctx, h, t)
 	case Apply:
-		return ErrApplyNotImplemented
+		return e.runApply(ctx, h, t)
 	default:
 		return fmt.Errorf("unknown hook type %q", h.Type)
 	}

@@ -71,9 +71,9 @@ const (
 	// its environment. This is the generic plumbing: it lets a consumer do
 	// anything against the cluster.
 	Exec Type = "exec"
-	// Apply applies a manifest file, directory or URL to the booted cluster
-	// via klotho's own client. Reserved: the type validates, but the engine
-	// does not run it yet (use an exec hook that runs kubectl apply).
+	// Apply applies a manifest (file, directory or http(s) URL) or installs a
+	// Helm release against the booted cluster via klotho's own client. An apply
+	// hook names exactly one of the two.
 	Apply Type = "apply"
 )
 
@@ -112,13 +112,39 @@ type Hook struct {
 	// Command and Args are the exec command line.
 	Command string
 	Args    []string
-	// Manifest is the apply source (file, directory or URL).
+	// Manifest is an apply source: a file, a directory of YAML, or an
+	// http(s) URL. An apply hook sets this or Helm, not both.
 	Manifest string
+	// Helm is an apply source: a Helm release to install or upgrade. An apply
+	// hook sets this or Manifest, not both.
+	Helm *HelmSpec
 	// Timeout bounds the hook. Zero means no klotho-imposed bound (the parent
 	// context still applies).
 	Timeout time.Duration
 	// OnFailure is the failure policy. The empty policy means Fail.
 	OnFailure Policy
+}
+
+// HelmSpec describes a Helm release an apply hook installs or upgrades against
+// the booted cluster. klotho installs exactly what the hook names; it bundles
+// nothing.
+type HelmSpec struct {
+	// Chart is the chart reference: a repository path (such as "stable/nginx",
+	// which requires a configured repository), an "oci://" reference, a
+	// packaged-chart URL, or a local path to a chart directory or .tgz.
+	Chart string
+	// Version is the chart version to install. Empty means the latest found.
+	Version string
+	// Namespace is the release namespace. Empty means "default"; klotho creates
+	// it if it does not exist.
+	Namespace string
+	// ReleaseName names the release. Empty derives it from the chart name.
+	ReleaseName string
+	// ValuesFile is a local values file merged into the release. Optional.
+	ValuesFile string
+	// Values are inline values merged into the release, taking precedence over
+	// ValuesFile. Optional.
+	Values map[string]any
 }
 
 // Target describes the booted cluster a hook runs against. klotho fills it in

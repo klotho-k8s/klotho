@@ -86,8 +86,11 @@ func TestHookValidation(t *testing.T) {
 		{"missing name", "hooks:\n  - event: postPivot\n    command: x\n", "needs a name"},
 		{"exec without command", "hooks:\n  - name: h\n    event: postPivot\n", "needs a command"},
 		{"exec with manifest", "hooks:\n  - name: h\n    event: postPivot\n    command: x\n    manifest: m.yaml\n", "may not set manifest"},
-		{"apply without manifest", "hooks:\n  - name: h\n    event: postPivot\n    type: apply\n", "needs a manifest"},
+		{"apply without manifest", "hooks:\n  - name: h\n    event: postPivot\n    type: apply\n", "needs a manifest or helm"},
 		{"apply with command", "hooks:\n  - name: h\n    event: postPivot\n    type: apply\n    manifest: m.yaml\n    command: x\n", "may not set command"},
+		{"apply both manifest and helm", "hooks:\n  - name: h\n    event: postPivot\n    type: apply\n    manifest: m.yaml\n    helm:\n      chart: stable/nginx\n", "exactly one of manifest or helm"},
+		{"apply helm without chart", "hooks:\n  - name: h\n    event: postPivot\n    type: apply\n    helm:\n      version: 1.2.3\n", "helm needs a chart"},
+		{"exec with helm", "hooks:\n  - name: h\n    event: postPivot\n    command: x\n    helm:\n      chart: stable/nginx\n", "may not set helm"},
 		{"unknown type", "hooks:\n  - name: h\n    event: postPivot\n    type: magic\n    command: x\n", "type"},
 		{"bad onFailure", "hooks:\n  - name: h\n    event: postPivot\n    command: x\n    onFailure: explode\n", "onFailure"},
 		{"bad timeout", "hooks:\n  - name: h\n    event: postPivot\n    command: x\n    timeout: soon\n", "timeout"},
@@ -104,6 +107,104 @@ func TestHookValidation(t *testing.T) {
 				t.Fatalf("error %q lacks %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestLoadApplyManifestHook(t *testing.T) {
+	isolate(t)
+	writeConfig(t, `
+hooks:
+  - name: cni
+    event: postPivot
+    type: apply
+    manifest: ./manifests/
+    timeout: 5m
+    onFailure: warn
+`)
+	c, err := Load("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	specs, err := c.HookSpecs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := specs[0]
+	if s.Type != hooks.Apply || s.Manifest != "./manifests/" || s.Helm != nil {
+		t.Fatalf("apply manifest hook: %+v", s)
+	}
+	if s.Timeout != 5*time.Minute || s.OnFailure != hooks.Warn {
+		t.Fatalf("apply manifest details: %+v", s)
+	}
+}
+
+func TestLoadApplyHelmHookValuesFile(t *testing.T) {
+	isolate(t)
+	writeConfig(t, `
+hooks:
+  - name: ingress
+    event: postPivot
+    type: apply
+    helm:
+      chart: oci://ghcr.io/nginx/charts/nginx-ingress
+      version: 2.3.0
+      namespace: ingress
+      releaseName: edge
+      values: ./values.yaml
+`)
+	c, err := Load("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	specs, err := c.HookSpecs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := specs[0].Helm
+	if h == nil {
+		t.Fatal("helm spec is nil")
+	}
+	if h.Chart != "oci://ghcr.io/nginx/charts/nginx-ingress" || h.Version != "2.3.0" ||
+		h.Namespace != "ingress" || h.ReleaseName != "edge" {
+		t.Fatalf("helm spec: %+v", h)
+	}
+	if h.ValuesFile != "./values.yaml" || h.Values != nil {
+		t.Fatalf("values should be a file path: %+v", h)
+	}
+}
+
+func TestLoadApplyHelmHookInlineValues(t *testing.T) {
+	isolate(t)
+	writeConfig(t, `
+hooks:
+  - name: ingress
+    event: postPivot
+    type: apply
+    helm:
+      chart: stable/nginx
+      values:
+        replicaCount: 3
+        service:
+          type: LoadBalancer
+`)
+	c, err := Load("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	specs, err := c.HookSpecs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := specs[0].Helm
+	if h == nil || h.ValuesFile != "" {
+		t.Fatalf("inline values should not set a file: %+v", h)
+	}
+	if got, _ := h.Values["replicaCount"].(float64); got != 3 {
+		t.Fatalf("inline replicaCount: %+v", h.Values)
+	}
+	svc, ok := h.Values["service"].(map[string]any)
+	if !ok || svc["type"] != "LoadBalancer" {
+		t.Fatalf("nested inline values: %+v", h.Values)
 	}
 }
 
