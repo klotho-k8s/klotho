@@ -119,6 +119,7 @@ func runCreate(ctx context.Context, c *cli.Command) error {
 	if cp != cpKubeadm && cp != cpK0s {
 		return fmt.Errorf("create: control plane provider %q: %w (available: %s, %s)", cp, ErrNotImplemented, cpKubeadm, cpK0s)
 	}
+	flavor := flavorFor(c.String("flavor"), cp)
 	vars, err := parseVars(c.StringSlice("var"))
 	if err != nil {
 		return err
@@ -151,7 +152,7 @@ func runCreate(ctx context.Context, c *cli.Command) error {
 	req := klotho.CreateRequest{
 		Spec: cluster.Spec{
 			Name:      name,
-			Flavor:    c.String("flavor"),
+			Flavor:    flavor,
 			Variables: vars,
 		},
 		Provider:             generate.ProviderRef{Name: provider, Version: pref.Version, URL: pref.FetchURL},
@@ -164,7 +165,7 @@ func runCreate(ctx context.Context, c *cli.Command) error {
 		ServiceCIDRs:         c.StringSlice("service-cidr"),
 		DryRunDir:            c.String("dry-run"),
 		Force:                c.Bool("force"),
-		InstallKubernetes:    installKubernetes(c, a.cfg),
+		InstallKubernetes:    installKubernetes(c, a.cfg, cp),
 		InstallOptions:       a.cfg.Nodes.InstallOptions(),
 		CAPI: generate.CAPIOptions{
 			Version:              a.cfg.CAPI.Version,
@@ -308,10 +309,26 @@ func fetchComponents(ctx context.Context, rawURL string) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
+// flavorFor resolves the template flavor. A k0s control plane needs the k0s
+// template; without an explicit flavor clusterctl would otherwise render the
+// kubeadm default, which has no K0sControlPlane for the operator to adopt, so
+// --control-plane k0s implies --flavor k0s.
+func flavorFor(flavor, cp string) string {
+	if flavor == "" && cp == cpK0s {
+		return cpK0s
+	}
+	return flavor
+}
+
 // installKubernetes decides whether the install-at-boot script goes into the
 // generated bundle: the --install-kubernetes flag when given (either way),
-// else nodes.installKubernetes from the configuration.
-func installKubernetes(c *cli.Command, cfg *config.Config) bool {
+// else nodes.installKubernetes from the configuration. A k0s control plane
+// installs Kubernetes itself and has no KubeadmControlPlane for the script to
+// patch, so it is always off for k0s regardless of flag or configuration.
+func installKubernetes(c *cli.Command, cfg *config.Config, cp string) bool {
+	if cp == cpK0s {
+		return false
+	}
 	if c.IsSet("install-kubernetes") {
 		return c.Bool("install-kubernetes")
 	}

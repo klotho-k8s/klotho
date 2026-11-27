@@ -251,7 +251,9 @@ func describe(objs []*unstructured.Unstructured) string {
 
 // SetClusterNetwork sets spec.clusterNetwork.pods.cidrBlocks and/or
 // spec.clusterNetwork.services.cidrBlocks on the Cluster object (an empty
-// slice leaves that network as it is) and re-renders b.YAML.
+// slice leaves that network as it is) and re-renders b.YAML. A k0s control
+// plane carries the network inside its own embedded k0s ClusterConfig rather
+// than on the Cluster, so any K0sControlPlane in the bundle is kept in step.
 func SetClusterNetwork(b *Bundle, pods, services []string) error {
 	obj, err := FindOne(b, ClusterGroup, "Cluster")
 	if err != nil {
@@ -265,6 +267,21 @@ func SetClusterNetwork(b *Bundle, pods, services []string) error {
 	if len(services) > 0 {
 		if err := unstructured.SetNestedStringSlice(obj.Object, services, "spec", "clusterNetwork", "services", "cidrBlocks"); err != nil {
 			return errors.Wrapf(err, "setting service CIDRs on %s %q", obj.GetKind(), obj.GetName())
+		}
+	}
+	// k0s keeps podCIDR/serviceCIDR as single strings under
+	// spec.k0sConfigSpec.k0s.spec.network; mirror the first CIDR of each so
+	// kube-router and the API server agree with the Cluster network.
+	for _, cp := range Find(b, ControlPlaneGroup, "K0sControlPlane") {
+		if len(pods) > 0 {
+			if err := unstructured.SetNestedField(cp.Object, pods[0], "spec", "k0sConfigSpec", "k0s", "spec", "network", "podCIDR"); err != nil {
+				return errors.Wrapf(err, "setting pod CIDR on %s %q", cp.GetKind(), cp.GetName())
+			}
+		}
+		if len(services) > 0 {
+			if err := unstructured.SetNestedField(cp.Object, services[0], "spec", "k0sConfigSpec", "k0s", "spec", "network", "serviceCIDR"); err != nil {
+				return errors.Wrapf(err, "setting service CIDR on %s %q", cp.GetKind(), cp.GetName())
+			}
 		}
 	}
 	_, err = b.Render()

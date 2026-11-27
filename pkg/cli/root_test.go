@@ -550,23 +550,43 @@ func TestShellRunsCommand(t *testing.T) {
 	}
 }
 
+func TestFlavorFor(t *testing.T) {
+	for name, tc := range map[string]struct {
+		flavor, cp, want string
+	}{
+		"explicit flavor kept for k0s":     {"custom", cpK0s, "custom"},
+		"explicit flavor kept for kubeadm": {"custom", cpKubeadm, "custom"},
+		"k0s implies k0s flavor":           {"", cpK0s, cpK0s},
+		"kubeadm keeps provider default":   {"", cpKubeadm, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := flavorFor(tc.flavor, tc.cp); got != tc.want {
+				t.Fatalf("flavorFor(%q, %q) = %q, want %q", tc.flavor, tc.cp, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestInstallKubernetesFlagWinsOverConfig(t *testing.T) {
 	for name, tc := range map[string]struct {
 		args []string
+		cp   string
 		cfg  bool
 		want bool
 	}{
-		"off by default":          {nil, false, false},
-		"config turns it on":      {nil, true, true},
-		"flag turns it on":        {[]string{"--install-kubernetes"}, false, true},
-		"flag=false beats config": {[]string{"--install-kubernetes=false"}, true, false},
+		"off by default":           {nil, cpKubeadm, false, false},
+		"config turns it on":       {nil, cpKubeadm, true, true},
+		"flag turns it on":         {[]string{"--install-kubernetes"}, cpKubeadm, false, true},
+		"flag=false beats config":  {[]string{"--install-kubernetes=false"}, cpKubeadm, true, false},
+		"k0s forces off":           {[]string{"--install-kubernetes"}, cpK0s, true, false},
+		"k0s off without the flag": {nil, cpK0s, true, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			var got bool
 			cmd := &cli.Command{
 				Flags: []cli.Flag{&cli.BoolFlag{Name: "install-kubernetes"}},
 				Action: func(_ context.Context, c *cli.Command) error {
-					got = installKubernetes(c, &config.Config{Nodes: config.Nodes{InstallKubernetes: tc.cfg}})
+					got = installKubernetes(c, &config.Config{Nodes: config.Nodes{InstallKubernetes: tc.cfg}}, tc.cp)
 					return nil
 				},
 			}

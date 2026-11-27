@@ -260,3 +260,44 @@ metadata:
 		t.Fatalf("nil object: %v %v %v", p, s, err)
 	}
 }
+
+func TestSetClusterNetworkK0sControlPlane(t *testing.T) {
+	b := mustParse(t, `apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: demo
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks: ["10.244.0.0/16"]
+---
+apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+kind: K0sControlPlane
+metadata:
+  name: demo-control-plane
+spec:
+  k0sConfigSpec:
+    k0s:
+      spec:
+        network:
+          provider: kuberouter
+          podCIDR: 10.244.0.0/16
+          serviceCIDR: 10.128.0.0/12
+`)
+	if err := SetClusterNetwork(b, []string{"10.100.0.0/16"}, []string{"10.96.0.0/12"}); err != nil {
+		t.Fatal(err)
+	}
+	assertInSync(t, b)
+	cp, err := FindOne(b, ControlPlaneGroup, "K0sControlPlane")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pod, _, err := unstructured.NestedString(cp.Object, "spec", "k0sConfigSpec", "k0s", "spec", "network", "podCIDR")
+	if err != nil || pod != "10.100.0.0/16" {
+		t.Fatalf("podCIDR=%q err=%v", pod, err)
+	}
+	svc, _, err := unstructured.NestedString(cp.Object, "spec", "k0sConfigSpec", "k0s", "spec", "network", "serviceCIDR")
+	if err != nil || svc != "10.96.0.0/12" {
+		t.Fatalf("serviceCIDR=%q err=%v", svc, err)
+	}
+}
