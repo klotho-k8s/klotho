@@ -1,7 +1,6 @@
 package hooks
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -138,13 +137,6 @@ func TestExecTimeout(t *testing.T) {
 func TestExecNoCommand(t *testing.T) {
 	err := NewEngine(nil).Run(t.Context(), Hook{Name: "x", Event: PostPivot, Type: Exec}, Target{})
 	if err == nil || !strings.Contains(err.Error(), "no command") {
-		t.Fatalf("got %v", err)
-	}
-}
-
-func TestApplyNotImplemented(t *testing.T) {
-	err := NewEngine(nil).Run(t.Context(), Hook{Name: "a", Event: PostPivot, Type: Apply, Manifest: "x.yaml"}, Target{})
-	if !errors.Is(err, ErrApplyNotImplemented) {
 		t.Fatalf("got %v", err)
 	}
 }
