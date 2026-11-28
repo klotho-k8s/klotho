@@ -48,6 +48,7 @@ inside)
 | DigitalOcean | CAPDO | by `providerID` | managed LB (forced) | ✅ | 🟡 **help wanted** | 🚧 finisher TODO | — |
 | OpenStack | CAPO | by name | $0 option (floating IP, no Octavia) | ✅ | 🟡 **help wanted** | 🚧 finisher TODO | — |
 | Azure | CAPZ | by name (pre-set ok) | internal LB (forced) | ✅ | 🟡 **help wanted** | 🚧 finisher TODO | — |
+| OCI | CAPOCI | by display-name + freeform tags | managed NLB skippable / user-supplied | ✅ | 🟡 **help wanted** | 🚧 finisher TODO | — |
 | Apple `vz` | CAPVZ | by name / `providerID` | node-zero IP | ✅ adapter | 🟡 awaiting Mac run | 🧹 daemon finisher (no deadlock) | macOS / Apple Silicon |
 | vSphere | CAPV | by `providerID` | kube-vip / user-supplied | ✅ | 🟡 **help wanted** | 🧹 govmomi external finisher (no sidecar) | — |
 
@@ -158,6 +159,30 @@ group/vnet/subnet, and an `AzureClusterIdentity` service principal. Build + unit
 **never run live** (no Azure credentials in the dev environment). See
 `provider/infrastructure/azure/TESTING.md`.
 
+### OCI (CAPOCI) — help wanted
+Adopts node zero by **display name cross-checked against CAPOCI's own ownership freeform
+tags**. CAPOCI's machine reconciler finds an existing instance by listing the compartment
+filtered to the OCIMachine's name and accepts it only when it carries
+`CreatedBy=OCIClusterAPIProvider` and `ClusterResourceIdentifier=<OCICluster.spec.ociResourceIdentifier>`.
+So klotho names the bootstrap instance `<cluster>-bootstrap`, pins `ociResourceIdentifier`
+to the cluster name in the flat template, and stamps both CAPOCI tags (plus klotho's own
+`klotho.io/cluster` ownership tag) on node zero before boot. `spec.providerID` is an output
+(`oci://<instance-ocid>`) CAPOCI sets itself — klotho must **not** pre-set it (the GCP/CAPD
+model, opposite of Linode). Cloud-init is delivered through the instance metadata `user_data`
+key (base64), the same channel CAPOCI uses. Stock CAPOCI always fronts the API server with a
+managed OCI load balancer (NLB by default); klotho's flat template instead sets the
+`cluster.x-k8s.io/skip-apiserver-lb-management` annotation and a user-supplied
+`controlPlaneEndpoint`, so no NLB is provisioned and the endpoint klotho minted the
+certificates for stands (point it at node zero's own reserved public IP for a single node,
+or an NLB you manage for HA). The cluster uses an **existing VCN + subnet** (networkSpec with
+`vcn.skip: true`), the same one node zero booted into, so CAPOCI adopts in place. Host-side
+auth is the OCI SDK config file (`~/.oci/config`) or instance principal; the in-cluster
+controller uses an `OCIClusterIdentity`/instance principal set up out of band. Build + unit
+green; **never run live** (no OCI credentials in the dev environment). Teardown reaches zero
+by terminating tagged instances but is not yet hands-off (finisher TODO, like GCP/Linode).
+See `provider/infrastructure/oci/TESTING.md`. The OCI Always Free tier (Ampere A1.Flex) or
+trial credits are enough to run the recipe.
+
 ### libvirt / KVM (CAPLV) — experimental
 Adopts node zero by name: klotho boots a `<cluster>-bootstrap` libvirt domain (a qcow2
 overlay of a base cloud image with a NoCloud cidata seed on a NAT network), and the
@@ -230,6 +255,8 @@ If you have access to any of these, you can move a provider from 🟡 to ✅:
 - **DigitalOcean** — an API token. Run `provider/infrastructure/digitalocean/TESTING.md`.
 - **OpenStack** — any OpenStack cloud (a free local DevStack or MicroStack works). Run
   `provider/infrastructure/openstack/TESTING.md`.
+- **OCI** — an Oracle Cloud tenancy (the Always Free tier / trial credits suffice). Run
+  `provider/infrastructure/oci/TESTING.md`.
 
 For each run, the three things we care about:
 1. Does the cluster come up (node zero → CAPI stack Ready)?

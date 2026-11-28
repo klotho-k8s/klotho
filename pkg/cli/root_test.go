@@ -388,6 +388,28 @@ func TestCreateAdmitsLinodeButNeedsToken(t *testing.T) {
 	}
 }
 
+func TestCreateAdmitsOCIButNeedsConfig(t *testing.T) {
+	isolate(t)
+	run(t, "", "init")
+	// oci is a known provider (it passes the create guard), but with no OCI
+	// placement settings configured the create cannot proceed, so the error is
+	// not ErrNotImplemented.
+	r := run(t, "", "create", "demo", "--provider", "oci")
+	if errors.Is(r.runErr, ErrNotImplemented) {
+		t.Fatalf("oci should be an admitted provider, got %v", r.runErr)
+	}
+	if r.runErr == nil {
+		t.Fatal("want an error about missing OCI configuration, got nil")
+	}
+}
+
+func TestProviderSecretDataOCIIsNil(t *testing.T) {
+	a := &app{cfg: &config.Config{OCI: config.OCI{CompartmentID: "ocid1.compartment.oc1..c"}}}
+	if d := a.providerSecretData(providerOCI); d != nil {
+		t.Fatalf("providerSecretData(oci) = %v, want nil (identity set up out of band)", d)
+	}
+}
+
 func TestCreateAdmitsGCPButNeedsProject(t *testing.T) {
 	isolate(t)
 	run(t, "", "init")
