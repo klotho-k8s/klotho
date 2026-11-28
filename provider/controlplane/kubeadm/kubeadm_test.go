@@ -526,6 +526,146 @@ func TestUserData(t *testing.T) {
 	})
 }
 
+// testKCPDocker is a minimal CAPD-shaped KubeadmControlPlane whose
+// initConfiguration sets no provider-id, so the ContainerNodes injection is
+// observable.
+const testKCPDocker = `apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+kind: KubeadmControlPlane
+metadata:
+  name: demo-control-plane
+  namespace: capi
+spec:
+  replicas: 1
+  version: v1.33.4
+  machineTemplate:
+    spec:
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: DockerMachineTemplate
+        name: demo-control-plane
+  kubeadmConfigSpec:
+    initConfiguration:
+      nodeRegistration:
+        kubeletExtraArgs:
+        - name: fail-swap-on
+          value: "false"
+`
+
+// initKubeletArgs renders UserData and returns the kubeletExtraArgs of the
+// InitConfiguration document in the generated kubeadm.yaml, plus the number of
+// documents in that file.
+func initKubeletArgs(t *testing.T, p *Provider, spec *cluster.Spec, kcp string) ([]bootstrapv1.Arg, int) {
+	t.Helper()
+	creds := prepare(t, p)
+	c, err := p.UserData(context.Background(), spec, creds, controlPlaneObject(t, kcp), nil)
+	if err != nil {
+		t.Fatalf("UserData: %v", err)
+	}
+	var cfg []byte
+	for _, f := range c.Files {
+		if f.Path == KubeadmConfigPath {
+			cfg = f.Content
+		}
+	}
+	if cfg == nil {
+		t.Fatal("kubeadm config missing")
+	}
+	docs := splitDocs(string(cfg))
+	for _, d := range docs {
+		if strings.Contains(d, "kind: InitConfiguration") {
+			ic, err := kubeadmtypes.UnmarshalInitConfiguration(d)
+			if err != nil {
+				t.Fatalf("InitConfiguration does not decode: %v", err)
+			}
+			return ic.NodeRegistration.KubeletExtraArgs, len(docs)
+		}
+	}
+	t.Fatal("no InitConfiguration document")
+	return nil, 0
+}
+
+func findArg(args []bootstrapv1.Arg, name string) (string, int) {
+	count, val := 0, ""
+	for _, a := range args {
+		if a.Name == name {
+			count++
+			val = deref(a.Value)
+		}
+	}
+	return val, count
+}
+
+func TestUserDataContainerNodesProviderID(t *testing.T) {
+	dockerSpec := &cluster.Spec{Name: "demo", Namespace: "capi", Provider: "docker", ControlPlane: Name}
+	const wantProviderID = "docker:////demo-bootstrap"
+
+	t.Run("injected for CAPD bootstrap node", func(t *testing.T) {
+		p := New(Options{ContainerNodes: true})
+		args, docs := initKubeletArgs(t, p, dockerSpec, testKCPDocker)
+		val, count := findArg(args, "provider-id")
+		if count != 1 || val != wantProviderID {
+			t.Errorf("provider-id arg = %q (count %d), want %q once; args = %+v", val, count, wantProviderID, args)
+		}
+		// The original fail-swap-on arg is preserved, not replaced.
+		if v, c := findArg(args, "fail-swap-on"); c != 1 || v != "false" {
+			t.Errorf("fail-swap-on arg = %q (count %d), want false once", v, c)
+		}
+		// ContainerNodes still appends the kube-proxy conntrack document:
+		// ClusterConfiguration + InitConfiguration + KubeProxyConfiguration.
+		if docs != 3 {
+			t.Errorf("kubeadm config has %d documents, want 3 with kube-proxy conntrack config", docs)
+		}
+	})
+
+	t.Run("not injected without ContainerNodes", func(t *testing.T) {
+		p := New(Options{})
+		args, docs := initKubeletArgs(t, p, dockerSpec, testKCPDocker)
+		if _, count := findArg(args, "provider-id"); count != 0 {
+			t.Errorf("provider-id injected without ContainerNodes: %+v", args)
+		}
+		if docs != 2 {
+			t.Errorf("kubeadm config has %d documents, want 2 without ContainerNodes", docs)
+		}
+	})
+
+	t.Run("spec provider-id wins over injection", func(t *testing.T) {
+		// testKCP already sets provider-id (proxmox form) in initConfiguration;
+		// even with ContainerNodes the provider must not add a second one.
+		p := New(Options{ContainerNodes: true})
+		args, _ := initKubeletArgs(t, p, testSpec(), testKCP)
+		if _, count := findArg(args, "provider-id"); count != 1 {
+			t.Errorf("provider-id count = %d, want the spec's single arg kept; args = %+v", count, args)
+		}
+		if v, _ := findArg(args, "provider-id"); strings.HasPrefix(v, "docker:") {
+			t.Errorf("spec provider-id was overridden to %q", v)
+		}
+	})
+}
+
+func TestWithBootstrapProviderID(t *testing.T) {
+	t.Run("appends when absent", func(t *testing.T) {
+		in := &bootstrapv1.InitConfiguration{}
+		out := withBootstrapProviderID(in, "demo-bootstrap")
+		if len(in.NodeRegistration.KubeletExtraArgs) != 0 {
+			t.Error("input was mutated")
+		}
+		val, count := findArg(out.NodeRegistration.KubeletExtraArgs, "provider-id")
+		if count != 1 || val != "docker:////demo-bootstrap" {
+			t.Errorf("provider-id = %q (count %d)", val, count)
+		}
+	})
+	t.Run("no-op when present", func(t *testing.T) {
+		existing := "proxmox://abc"
+		in := &bootstrapv1.InitConfiguration{}
+		in.NodeRegistration.KubeletExtraArgs = []bootstrapv1.Arg{{Name: "provider-id", Value: &existing}}
+		out := withBootstrapProviderID(in, "demo-bootstrap")
+		val, count := findArg(out.NodeRegistration.KubeletExtraArgs, "provider-id")
+		if count != 1 || val != existing {
+			t.Errorf("provider-id = %q (count %d), want %q kept", val, count, existing)
+		}
+	})
+}
+
 func TestUserDataRejects(t *testing.T) {
 	p := testProvider()
 	creds := prepare(t, p)

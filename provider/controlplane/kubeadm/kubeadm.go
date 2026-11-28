@@ -677,7 +677,22 @@ func (p *Provider) kubeadmConfig(spec *cluster.Spec, cfg *bootstrapv1.KubeadmCon
 	if err != nil {
 		return nil, fmt.Errorf("kubeadm: rendering ClusterConfiguration: %w", err)
 	}
-	initYAML, err := kubeadmtypes.MarshalInitConfigurationForVersion(&cfg.InitConfiguration, sv)
+	initCfg := &cfg.InitConfiguration
+	if p.opts.ContainerNodes {
+		// The adopted bootstrap node is hand-booted and kubeadm-init'd by
+		// klotho, so CAPD never runs the providerID patch it applies to the
+		// nodes it creates itself. Without a providerID the adopted Machine
+		// never gets a status.nodeRef and the control plane stays unavailable.
+		// Give the kubelet the CAPD provider ID at init so node zero registers
+		// with spec.providerID = docker:////<node> from the start; the node
+		// name is the bootstrap container name, which is BootstrapMachineName.
+		// This injects into the rendered bootstrap kubeadm.yaml only, not the
+		// recorded KubeadmConfig, so KubeadmControlPlane sees no rollout and the
+		// machines it creates later (whose providerID CAPD sets) are untouched.
+		// Mirrors the rke2 kubelet-arg and k0s post-init patch on CAPD.
+		initCfg = withBootstrapProviderID(initCfg, BootstrapMachineName(clusterName))
+	}
+	initYAML, err := kubeadmtypes.MarshalInitConfigurationForVersion(initCfg, sv)
 	if err != nil {
 		return nil, fmt.Errorf("kubeadm: rendering InitConfiguration: %w", err)
 	}
@@ -703,6 +718,35 @@ conntrack:
   tcpEstablishedTimeout: 0s
   tcpCloseWaitTimeout: 0s
 `
+
+// dockerProviderIDPrefix is the DockerMachine (CAPD) provider ID scheme; the
+// adopted bootstrap node's provider ID is this prefix plus its container name,
+// which equals the bootstrap machine name. Kept as a literal here, as the rke2
+// and k0s CAPD paths do, to avoid importing the docker infrastructure package.
+const dockerProviderIDPrefix = "docker:////"
+
+// bootstrapProviderIDArg is the kubelet flag that sets a node's provider ID.
+const bootstrapProviderIDArg = "provider-id"
+
+// withBootstrapProviderID returns a deep copy of init with a kubelet
+// provider-id extra arg pinned to the CAPD provider ID for nodeName, so the
+// adopted bootstrap node registers with spec.providerID already set. It is a
+// no-op copy when the spec already sets provider-id (the KubeadmControlPlane
+// wins). --provider-id is a valid kubelet flag for every supported version.
+func withBootstrapProviderID(init *bootstrapv1.InitConfiguration, nodeName string) *bootstrapv1.InitConfiguration {
+	out := init.DeepCopy()
+	for _, a := range out.NodeRegistration.KubeletExtraArgs {
+		if a.Name == bootstrapProviderIDArg {
+			return out
+		}
+	}
+	value := dockerProviderIDPrefix + nodeName
+	out.NodeRegistration.KubeletExtraArgs = append(out.NodeRegistration.KubeletExtraArgs, bootstrapv1.Arg{
+		Name:  bootstrapProviderIDArg,
+		Value: &value,
+	})
+	return out
+}
 
 // providerID returns the provider ID for a bootstrap node ID: the ID itself
 // when it already carries a scheme, the provider's scheme plus the ID when
