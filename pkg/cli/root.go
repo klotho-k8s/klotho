@@ -53,6 +53,7 @@ func New(info BuildInfo) *cli.Command {
 		Commands: []*cli.Command{
 			newInitCommand(),
 			newCreateCommand(),
+			newUpgradeCommand(),
 			newDeleteCommand(),
 			newListCommand(),
 			newShellCommand(),
