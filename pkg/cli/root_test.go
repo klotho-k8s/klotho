@@ -555,8 +555,10 @@ func TestFlavorFor(t *testing.T) {
 		flavor, cp, want string
 	}{
 		"explicit flavor kept for k0s":     {"custom", cpK0s, "custom"},
+		"explicit flavor kept for rke2":    {"custom", cpRKE2, "custom"},
 		"explicit flavor kept for kubeadm": {"custom", cpKubeadm, "custom"},
 		"k0s implies k0s flavor":           {"", cpK0s, cpK0s},
+		"rke2 implies rke2 flavor":         {"", cpRKE2, cpRKE2},
 		"kubeadm keeps provider default":   {"", cpKubeadm, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -574,12 +576,14 @@ func TestInstallKubernetesFlagWinsOverConfig(t *testing.T) {
 		cfg  bool
 		want bool
 	}{
-		"off by default":           {nil, cpKubeadm, false, false},
-		"config turns it on":       {nil, cpKubeadm, true, true},
-		"flag turns it on":         {[]string{"--install-kubernetes"}, cpKubeadm, false, true},
-		"flag=false beats config":  {[]string{"--install-kubernetes=false"}, cpKubeadm, true, false},
-		"k0s forces off":           {[]string{"--install-kubernetes"}, cpK0s, true, false},
-		"k0s off without the flag": {nil, cpK0s, true, false},
+		"off by default":            {nil, cpKubeadm, false, false},
+		"config turns it on":        {nil, cpKubeadm, true, true},
+		"flag turns it on":          {[]string{"--install-kubernetes"}, cpKubeadm, false, true},
+		"flag=false beats config":   {[]string{"--install-kubernetes=false"}, cpKubeadm, true, false},
+		"k0s forces off":            {[]string{"--install-kubernetes"}, cpK0s, true, false},
+		"k0s off without the flag":  {nil, cpK0s, true, false},
+		"rke2 forces off":           {[]string{"--install-kubernetes"}, cpRKE2, true, false},
+		"rke2 off without the flag": {nil, cpRKE2, true, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			var got bool
