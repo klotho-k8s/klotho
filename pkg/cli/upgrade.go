@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/urfave/cli/v3"
 
@@ -12,7 +13,7 @@ import (
 func newUpgradeCommand() *cli.Command {
 	return &cli.Command{
 		Name:      "upgrade",
-		Usage:     "Upgrade a cluster's Kubernetes version",
+		Usage:     "Upgrade a cluster's Kubernetes version and/or its Cluster API components",
 		ArgsUsage: "[name]",
 		Description: "Raises the Kubernetes version through the cluster's own Cluster API: it\n" +
 			"patches the control plane object's spec.version and lets the controller roll\n" +
@@ -29,13 +30,47 @@ func newUpgradeCommand() *cli.Command {
 			"install-at-boot script, a prepared Proxmox template) cannot derive the target\n" +
 			"version from the Machine spec; point the machines at a new image for the\n" +
 			"target version with --control-plane-image / --worker-image. CAPD needs\n" +
-			"neither: its DockerMachine derives kindest/node:v<version> from the Machine.",
+			"neither: its DockerMachine derives kindest/node:v<version> from the Machine.\n\n" +
+			"Day-2 management-plane upgrade: --capi-version bumps the Cluster API core and\n" +
+			"kubeadm bootstrap/control-plane providers together, --provider-version the\n" +
+			"infrastructure provider; the matching --*-image flags carry a fork or mirror\n" +
+			"image. klotho re-applies the operator provider CRs at the target version and\n" +
+			"waits for each to roll out (core, bootstrap, control-plane, infrastructure).\n" +
+			"These are independent of --kubernetes-version; given together, the components\n" +
+			"upgrade runs first. See docs/UPGRADES.md.",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
-				Name:     "kubernetes-version",
-				Aliases:  []string{"k"},
-				Usage:    "target Kubernetes version, e.g. v1.33.4",
-				Required: true,
+				Name:    "kubernetes-version",
+				Aliases: []string{"k"},
+				Usage:   "target Kubernetes (node) version, e.g. v1.33.4; omit for a components-only upgrade",
+			},
+			&cli.StringFlag{
+				Name:  "capi-version",
+				Usage: "day-2: bump the Cluster API core + kubeadm bootstrap/control-plane providers to this version",
+			},
+			&cli.StringFlag{
+				Name:  "provider-version",
+				Usage: "day-2: bump the infrastructure provider to this version",
+			},
+			&cli.StringFlag{
+				Name:  "operator-version",
+				Usage: "day-2: bump the Cluster API operator itself (default: leave the operator and cert-manager alone)",
+			},
+			&cli.StringFlag{
+				Name:  "capi-core-image",
+				Usage: "day-2: fork/mirror image for the Cluster API core controller (with --capi-version)",
+			},
+			&cli.StringFlag{
+				Name:  "capi-bootstrap-image",
+				Usage: "day-2: fork/mirror image for the kubeadm bootstrap controller",
+			},
+			&cli.StringFlag{
+				Name:  "capi-controlplane-image",
+				Usage: "day-2: fork/mirror image for the kubeadm control-plane controller",
+			},
+			&cli.StringFlag{
+				Name:  "provider-image",
+				Usage: "day-2: fork/mirror image for the infrastructure provider controller",
 			},
 			&cli.StringFlag{
 				Name:  "cluster",
@@ -79,10 +114,6 @@ func newUpgradeCommand() *cli.Command {
 			if err != nil {
 				return err
 			}
-			a, err := newApp(c)
-			if err != nil {
-				return err
-			}
 			opts := klotho.UpgradeOptions{
 				KubernetesVersion: c.String("kubernetes-version"),
 				ControlPlaneOnly:  c.Bool("control-plane-only"),
@@ -93,14 +124,57 @@ func newUpgradeCommand() *cli.Command {
 				ControlPlaneImage: c.String("control-plane-image"),
 				WorkerImage:       c.String("worker-image"),
 				ImageField:        c.String("image-field"),
+				Components: klotho.ComponentUpgrade{
+					CAPIVersion:       c.String("capi-version"),
+					ProviderVersion:   c.String("provider-version"),
+					OperatorVersion:   c.String("operator-version"),
+					CoreImage:         c.String("capi-core-image"),
+					BootstrapImage:    c.String("capi-bootstrap-image"),
+					ControlPlaneImage: c.String("capi-controlplane-image"),
+					ProviderImage:     c.String("provider-image"),
+				},
+			}
+			// Validate before touching configuration or the cluster: the user must
+			// ask for at least one of a node-version upgrade or a management-plane
+			// component upgrade.
+			if opts.KubernetesVersion == "" && !opts.Components.Requested() {
+				return fmt.Errorf("upgrade: nothing to do: set --kubernetes-version and/or a component flag (--capi-version, --provider-version, --operator-version, or an image flag)")
+			}
+			a, err := newApp(c)
+			if err != nil {
+				return err
 			}
 			if err := klotho.Upgrade(ctx, a.deps(), name, opts); err != nil {
 				return err
 			}
-			_, _ = fmt.Fprintf(stdout(c), "upgraded %s to %s\n", name, c.String("kubernetes-version"))
+			_, _ = fmt.Fprintf(stdout(c), "upgraded %s: %s\n", name, upgradeSummary(opts))
 			return nil
 		},
 	}
+}
+
+// upgradeSummary describes, in one line, what an upgrade changed, for the
+// command's success message.
+func upgradeSummary(opts klotho.UpgradeOptions) string {
+	var parts []string
+	if opts.KubernetesVersion != "" {
+		parts = append(parts, "Kubernetes "+opts.KubernetesVersion)
+	}
+	c := opts.Components
+	if c.CAPIVersion != "" {
+		parts = append(parts, "CAPI "+c.CAPIVersion)
+	}
+	if c.ProviderVersion != "" {
+		parts = append(parts, "provider "+c.ProviderVersion)
+	}
+	if c.OperatorVersion != "" {
+		parts = append(parts, "operator "+c.OperatorVersion)
+	}
+	if len(parts) == 0 {
+		// Only image flags were given.
+		return "component images"
+	}
+	return strings.Join(parts, ", ")
 }
 
 // upgradeClusterName resolves the cluster name from the positional argument or

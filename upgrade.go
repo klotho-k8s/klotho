@@ -92,8 +92,16 @@ func knownControlPlaneKinds() []controlPlaneKind {
 
 // UpgradeOptions control Upgrade.
 type UpgradeOptions struct {
-	// KubernetesVersion is the target version, for example "v1.33.4". Required.
+	// KubernetesVersion is the target workload version, for example "v1.33.4".
+	// Empty means no node-version upgrade; at least one of KubernetesVersion or
+	// a Components field must be set.
 	KubernetesVersion string
+	// Components, when requested, upgrades the Cluster API management-plane
+	// components (the controllers themselves) through the cluster's own operator
+	// provider CRs. It is independent of KubernetesVersion; when both are set the
+	// components upgrade runs first (newer controllers then manage the node
+	// rollout). See ComponentUpgrade.
+	Components ComponentUpgrade
 	// ControlPlaneOnly upgrades only the control plane. WorkersOnly upgrades
 	// only the MachineDeployments. Both false upgrades the control plane first,
 	// then the workers. Both true is rejected.
@@ -183,11 +191,22 @@ func Upgrade(ctx context.Context, deps Deps, name string, opts UpgradeOptions) e
 	if opts.ControlPlaneOnly && opts.WorkersOnly {
 		return errors.New("klotho: --control-plane-only and --workers-only are mutually exclusive")
 	}
-	target, err := parseUpgradeVersion(opts.KubernetesVersion)
-	if err != nil {
-		return err
+	doKube := opts.KubernetesVersion != ""
+	doComponents := opts.Components.Requested()
+	if !doKube && !doComponents {
+		return errors.New("klotho: nothing to upgrade: set --kubernetes-version and/or a component flag (--capi-version, --provider-version, --operator-version, or an image flag)")
 	}
-	log := deps.log().With("cluster", name, "version", "v"+target.String())
+
+	// Parse the target version up front so a bad value fails before connecting.
+	var target semver.Version
+	if doKube {
+		var err error
+		target, err = parseUpgradeVersion(opts.KubernetesVersion)
+		if err != nil {
+			return err
+		}
+	}
+	log := deps.log().With("cluster", name)
 
 	st, err := Load(ctx, deps, name)
 	if err != nil {
@@ -201,6 +220,30 @@ func Upgrade(ctx context.Context, deps Deps, name string, opts UpgradeOptions) e
 		return err
 	}
 
+	// Components first: a management-plane upgrade rolls the controllers before
+	// the node rollout, so the newer controllers manage it. When only components
+	// are requested this is the whole upgrade.
+	if doComponents {
+		if err := upgradeComponents(ctx, deps, cl, opts.Components, opts.Force, log); err != nil {
+			return err
+		}
+	}
+
+	if doKube {
+		if err := upgradeKubernetes(ctx, deps, cl, name, target, opts, log.With("version", "v"+target.String())); err != nil {
+			return err
+		}
+	}
+
+	log.Info("upgrade complete")
+	return nil
+}
+
+// upgradeKubernetes is the node-version upgrade: pure, provider-agnostic Cluster
+// API orchestration that discovers the control-plane object and the
+// MachineDeployments, checks the version skew, and patches spec.version (control
+// plane first, then workers), optionally waiting for each rollout.
+func upgradeKubernetes(ctx context.Context, deps Deps, cl kube.Cluster, name string, target semver.Version, opts UpgradeOptions, log *slog.Logger) error {
 	d, err := discover(ctx, cl, name)
 	if err != nil {
 		return err
@@ -254,8 +297,6 @@ func Upgrade(ctx context.Context, deps Deps, name string, opts UpgradeOptions) e
 	} else {
 		log.Info("skipping the workers (--control-plane-only)")
 	}
-
-	log.Info("upgrade complete")
 	return nil
 }
 

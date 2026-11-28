@@ -424,6 +424,35 @@ func ProviderObjects(o CAPIOptions, redact bool) ([]*unstructured.Unstructured, 
 	return objs, nil
 }
 
+// SetManagerImage is the exported form of setManagerImage: it patches an
+// operator provider object's manager container image. Create uses it as a
+// create-time lever (through ProviderObjects); the day-2 management-plane
+// upgrade reuses the very same lever against a live provider CR, so a component
+// version bump carries the matching fork/mirror image rather than silently
+// reverting to the operator's built-in default. An empty image is a no-op.
+func SetManagerImage(u *unstructured.Unstructured, image string) { setManagerImage(u, image) }
+
+// ManagerImage reads an operator provider object's manager container image back
+// out (the inverse of SetManagerImage), returning "" when the provider carries
+// no image override - the state in which the operator uses its built-in default
+// image for the provider's version. The day-2 upgrade reads it to tell a
+// fork/mirror pin (an explicit imageUrl) from an upstream-default install.
+func ManagerImage(u *unstructured.Unstructured) string {
+	containers, found, err := unstructured.NestedSlice(u.Object, "spec", "deployment", "containers")
+	if err != nil || !found {
+		return ""
+	}
+	for _, c := range containers {
+		m, ok := c.(map[string]any)
+		if !ok || m["name"] != "manager" {
+			continue
+		}
+		img, _ := m["imageUrl"].(string)
+		return img
+	}
+	return ""
+}
+
 // setManagerImage patches an operator provider object's manager container
 // image, overriding the controller image without rewriting the fetched
 // component manifests (the operator keeps the image repository it knows for the
@@ -433,7 +462,17 @@ func setManagerImage(u *unstructured.Unstructured, image string) {
 	if image == "" {
 		return
 	}
-	u.Object["spec"].(map[string]any)["deployment"].(map[string]any)["containers"] = []any{
+	spec, ok := u.Object["spec"].(map[string]any)
+	if !ok {
+		spec = map[string]any{}
+		u.Object["spec"] = spec
+	}
+	deployment, ok := spec["deployment"].(map[string]any)
+	if !ok {
+		deployment = map[string]any{}
+		spec["deployment"] = deployment
+	}
+	deployment["containers"] = []any{
 		map[string]any{"name": "manager", "imageUrl": image},
 	}
 }
