@@ -17,6 +17,8 @@ require (
 	github.com/blang/semver/v4 v4.0.0
 	github.com/digitalocean/go-libvirt v0.0.0-20261013170128-efbbdf578ac8
 	github.com/digitalocean/godo v1.247.0
+	github.com/gophercloud/gophercloud/v2 v2.16.0
+	github.com/gophercloud/utils/v2 v2.0.0-20260922174841-b4759ea0529b
 	github.com/hetznercloud/hcloud-go/v2 v2.21.1
 	github.com/kdomanski/iso9660 v0.4.0
 	github.com/linode/linodego/v2 v2.6.0
@@ -101,6 +103,7 @@ require (
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
 	github.com/gobuffalo/flect v1.0.3 // indirect
 	github.com/gobwas/glob v0.2.3 // indirect
+	github.com/gofrs/uuid/v5 v5.5.1 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/google/btree v1.1.3 // indirect

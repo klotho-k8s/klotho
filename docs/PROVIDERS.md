@@ -46,11 +46,10 @@ inside)
 | GCP | CAPG | by name | managed LB (forced) | ✅ | 🟡 **help wanted** | 🚧 finisher TODO | — |
 | Hetzner | CAPH | by name (no pre-set id) | $0 option (LB disabled) | ✅ | 🟡 **help wanted** | 🚧 finisher TODO | — |
 | DigitalOcean | CAPDO | by `providerID` | managed LB (forced) | ✅ | 🟡 **help wanted** | 🚧 finisher TODO | — |
+| OpenStack | CAPO | by name | $0 option (floating IP, no Octavia) | ✅ | 🟡 **help wanted** | 🚧 finisher TODO | — |
 | Azure | CAPZ | by name (pre-set ok) | internal LB (forced) | ✅ | 🟡 **help wanted** | 🚧 finisher TODO | — |
 | Apple `vz` | CAPVZ | by name / `providerID` | node-zero IP | ✅ adapter | 🟡 awaiting Mac run | 🧹 daemon finisher (no deadlock) | macOS / Apple Silicon |
 | vSphere | CAPV | by `providerID` | kube-vip / user-supplied | ✅ | 🟡 **help wanted** | 🧹 govmomi external finisher (no sidecar) | — |
-
-*Planned next:* OpenStack (CAPO).
 
 ## Provider notes
 
@@ -121,6 +120,36 @@ provisioning a second. Node zero is tagged with CAPDO's apiserver role tag so th
 load balancer forwards to it. Build + unit green; **never run live** (no
 DigitalOcean credentials in the dev environment). See
 `provider/infrastructure/digitalocean/TESTING.md`.
+
+### OpenStack (CAPO) — help wanted
+Adopts node zero **by name** — klotho must **not** pre-set `providerID`. CAPO's
+`OpenStackServer` reconciler, when it has no recorded instance ID, calls
+`GetInstanceStatusByName(name)`, which lists Nova servers with an anchored-exact
+name filter (`^<name>$`): exactly one match is reused (adopted) and its UUID
+becomes the machine's `providerID`; zero creates a new server; more than one is a
+`DuplicateServerNames` error. The Nova server name equals the OpenStackServer
+object name equals the OpenStackMachine object name, so klotho boots node zero as
+`<cluster>-bootstrap` and CAPO finds and reuses it. `spec.providerID` is
+output-only (CAPO overwrites it to `openstack:///<uuid>` once ACTIVE), so klotho
+leaves it unset. Confirmed against CAPO v0.15.2 source
+(`controllers/openstackserver_controller.go` `getOrCreateServer`,
+`pkg/cloud/services/compute/instance.go` `GetInstanceStatusByName`).
+
+The endpoint is cost-aware with **no Octavia load balancer**: klotho allocates a
+Neutron floating IP from the external network in `Prepare` (so the endpoint is
+known before cert-minting), boots node zero, and associates the floating IP with
+it; the flat template disables the managed LB and keeps that floating IP
+(`spec.apiServer.floatingIP`) after adoption. Set `openstack.controlPlaneEndpoint`
+to an existing floating IP / Octavia VIP / DNS name to bring your own instead
+(nothing is allocated). The kubelet is given `openstack:///<nova-uuid>` directly,
+so there is no cloud controller manager. klotho talks to Nova/Neutron/Glance with
+the official `github.com/gophercloud/gophercloud/v2` SDK, authenticating from a
+`clouds.yaml` entry (`openstack.cloud` / `OS_CLOUD`); that clouds.yaml is handed,
+base64-encoded, to the in-cluster controller as a per-cluster credential Secret.
+Build + unit green; **never run live** (no OpenStack in the dev environment —
+self-hostable via DevStack/MicroStack). See
+`provider/infrastructure/openstack/TESTING.md`. Teardown reaches zero (servers +
+floating IP) but is not yet a hands-off finisher.
 
 ### Azure (CAPZ) — help wanted
 Adopts node zero by name; a pre-set `providerID` is fine (CAPL-style). Uses an internal
@@ -199,8 +228,8 @@ If you have access to any of these, you can move a provider from 🟡 to ✅:
 - **vSphere** — a vCenter + ESXi host. Run `provider/infrastructure/vsphere/TESTING.md`
   (confirm CAPV adopts node zero rather than cloning a duplicate — the unverified path).
 - **DigitalOcean** — an API token. Run `provider/infrastructure/digitalocean/TESTING.md`.
-- **OpenStack** — provider work is planned; if you'd run the live test,
-  tell us and we'll prioritize that provider.
+- **OpenStack** — any OpenStack cloud (a free local DevStack or MicroStack works). Run
+  `provider/infrastructure/openstack/TESTING.md`.
 
 For each run, the three things we care about:
 1. Does the cluster come up (node zero → CAPI stack Ready)?
