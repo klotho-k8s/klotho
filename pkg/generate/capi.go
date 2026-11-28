@@ -221,6 +221,8 @@ func DefaultInfraNamespace(provider string) string {
 		return "capmox-system"
 	case "libvirt":
 		return "capi-libvirt-system"
+	case "vz":
+		return "capi-vz-system"
 	case "":
 		return ""
 	}

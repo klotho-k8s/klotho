@@ -15,6 +15,7 @@
 //	KLOTHO_PROXMOX_SECRET       proxmox.secret
 //	KLOTHO_PROXMOX_INSECURE     proxmox.insecure
 //	KLOTHO_LIBVIRT_URI          libvirt.uri
+//	KLOTHO_VZ_TOKEN             vz.token
 //	KLOTHO_S3_ACCESS_KEY_ID     payload.s3 access key (environment only)
 //	KLOTHO_S3_SECRET_ACCESS_KEY payload.s3 secret key (environment only)
 //
@@ -65,6 +66,9 @@ const (
 	// EnvLibvirtURI is the libvirt connection URI; it sets libvirt.uri when that
 	// is unset.
 	EnvLibvirtURI = "KLOTHO_LIBVIRT_URI"
+	// EnvVZToken is the capvz-daemon bearer token; it sets vz.token when that is
+	// unset. klotho never writes it back to disk.
+	EnvVZToken = "KLOTHO_VZ_TOKEN"
 )
 
 // Defaults.
@@ -123,6 +127,14 @@ const (
 	// ProviderLibvirt is the libvirt infrastructure provider's name, as
 	// clusterctl and --provider know it.
 	ProviderLibvirt = "libvirt"
+	// DefaultVZVersion is the Cluster API vz provider release klotho installs for
+	// the vz provider. It is produced from klotho-k8s/cluster-api-provider-vz; vz
+	// is not in clusterctl's built-in provider list, so providers.vz.fetchURL
+	// (and componentsURL) must point at its release. VERIFY against a live run.
+	DefaultVZVersion = "v0.1.0"
+	// ProviderVZ is the vz (Apple Virtualization.framework) infrastructure
+	// provider's name, as clusterctl and --provider know it.
+	ProviderVZ = "vz"
 	// FileName is the configuration file's name inside the config directory.
 	FileName = "config.yaml"
 	// IdentityFileName is the default age identity file's name inside the
@@ -171,6 +183,7 @@ type Config struct {
 	Docker            Docker     `json:"docker,omitempty"`
 	Hyperv            Hyperv     `json:"hyperv,omitempty"`
 	Libvirt           Libvirt    `json:"libvirt,omitempty"`
+	VZ                VZ         `json:"vz,omitempty"`
 	CAPI              CAPI       `json:"capi,omitempty"`
 	// K0smotron configures the k0smotron bootstrap and control-plane providers
 	// installed for --control-plane k0s. Empty fields use built-in defaults.
@@ -558,6 +571,44 @@ type Libvirt struct {
 	DiskGiB int `json:"diskGiB,omitempty"`
 	// EndpointHost is the static control plane endpoint address; libvirt has no
 	// load balancer. Empty means the CONTROL_PLANE_ENDPOINT_HOST variable.
+	EndpointHost string `json:"endpointHost,omitempty"`
+}
+
+// VZ holds the connection and VM settings for the vz (Apple
+// Virtualization.framework) provider. klotho reaches the host-side capvz-daemon
+// over gRPC with TLS and a bearer token; the in-cluster Cluster API vz controller
+// reaches the same daemon, so the endpoint and token are handed to it as a
+// Secret.
+type VZ struct {
+	// Endpoint is the capvz-daemon's gRPC address klotho dials, "host:port" (for
+	// example "my-mac.local:7443"). Required for any operation that reaches the
+	// daemon.
+	Endpoint string `json:"endpoint,omitempty"`
+	// CA is the path to a PEM CA bundle that signs the daemon's TLS certificate.
+	// Empty means the host's system root CAs; point it at the cert the daemon
+	// wrote to its data dir on first run when it is self-signed.
+	CA string `json:"ca,omitempty"`
+	// ServerName overrides the TLS server name verified against the daemon's
+	// certificate. Empty means the Endpoint host. Set it when dialing by IP a
+	// certificate issued for a hostname.
+	ServerName string `json:"serverName,omitempty"`
+	// Token is the bearer token every gRPC call presents. It comes from the
+	// environment (KLOTHO_VZ_TOKEN) too, and is handed to the in-cluster
+	// controller as VZ_DAEMON_TOKEN. klotho never writes it back to disk.
+	Token string `json:"token,omitempty"`
+	// Host is the vz host recorded in machine provider IDs (vz://<host>/<vmid>).
+	// Empty means the VZ_HOST variable, then "localhost". It must match the
+	// kubelet --provider-id host.
+	Host string `json:"host,omitempty"`
+	// Image is the path, on the Mac host, to the raw arm64 cloud-init enabled
+	// base disk image the daemon copies for the bootstrap VM. Empty means the
+	// VZ_IMAGE_PATH variable. Required; the provider never downloads or builds it.
+	Image string `json:"image,omitempty"`
+	// MemoryMiB and CPUs size the bootstrap VM. Zero means 4096 and 2.
+	MemoryMiB int `json:"memoryMiB,omitempty"`
+	CPUs      int `json:"cpus,omitempty"`
+	// EndpointHost is the static control plane endpoint address; vz has no load
+	// balancer. Empty means the CONTROL_PLANE_ENDPOINT_HOST variable.
 	EndpointHost string `json:"endpointHost,omitempty"`
 }
 
@@ -1252,6 +1303,11 @@ func (c *Config) applyEnv() error {
 			c.Libvirt.URI = v
 		}
 	}
+	if c.VZ.Token == "" {
+		if v, ok := os.LookupEnv(EnvVZToken); ok && v != "" {
+			c.VZ.Token = v
+		}
+	}
 	return nil
 }
 
@@ -1312,6 +1368,11 @@ func (c *Config) applyDefaults() {
 		libvirt.Version = DefaultLibvirtVersion
 	}
 	c.Providers[ProviderLibvirt] = libvirt
+	vzp := c.Providers[ProviderVZ]
+	if vzp.Version == "" {
+		vzp.Version = DefaultVZVersion
+	}
+	c.Providers[ProviderVZ] = vzp
 	if c.Variables == nil {
 		c.Variables = map[string]string{}
 	}
@@ -1589,6 +1650,13 @@ const Skeleton = `# klotho configuration. Every field is optional; see "klotho -
 #   image: ubuntu-24.qcow2   # a cloud-init qcow2 volume in the pool (noble; debian-12 generic lacks cloud-init)
 #   network: default         # a libvirt NAT network
 #   endpointHost: 192.168.122.10           # node zero's address (no load balancer)
+# vz:                          # Apple Virtualization.framework on an Apple-Silicon Mac
+#   endpoint: my-mac.local:7443   # the capvz-daemon's gRPC address (host:port)
+#   # token: set KLOTHO_VZ_TOKEN instead of storing it here
+#   ca: ~/.config/klotho/capvz-ca.pem   # omit to trust the system roots
+#   host: localhost            # recorded in providerID vz://<host>/<vmid>
+#   image: /opt/images/ubuntu-24.04-arm64.raw   # a raw arm64 cloud image on the Mac
+#   endpointHost: 192.168.64.10            # node zero's address (no load balancer)
 # providers:
 #   proxmox:
 #     version: v0.9.2
@@ -1600,6 +1668,10 @@ const Skeleton = `# klotho configuration. Every field is optional; see "klotho -
 #     # operator keeps the image repository it knows, the manager image to run
 #     # fetchURL: https://github.com/<owner>/cluster-api-provider-proxmox/releases/<version>/infrastructure-components.yaml
 #     # image: ghcr.io/<owner>/cluster-api-provider-proxmox:<version>
+#   vz:
+#     version: v0.1.0
+#     # vz is not in clusterctl's built-in list, so point these at its release:
+#     # fetchURL: https://github.com/klotho-k8s/cluster-api-provider-vz/releases/<version>/infrastructure-components.yaml
 # variables:
 #   CONTROL_PLANE_ENDPOINT_IP: 10.0.0.10
 # hooks:                       # your own actions against the booted cluster; klotho installs nothing
