@@ -136,7 +136,7 @@ func Pause(ctx context.Context, deps Deps, name string, opts PauseOptions) (*Pau
 // and left untouched. Any lingering per-object cluster.x-k8s.io/paused
 // annotations on child objects are reported, because clearing spec.paused does
 // not remove them.
-func Unpause(ctx context.Context, deps Deps, name string, opts PauseOptions) (*PauseResult, error) {
+func Unpause(ctx context.Context, deps Deps, name string, _ PauseOptions) (*PauseResult, error) {
 	cl, live, err := connectAndLoadCluster(ctx, deps, name)
 	if err != nil {
 		return nil, err
@@ -200,7 +200,7 @@ func connectAndLoadCluster(ctx context.Context, deps Deps, name string) (kube.Cl
 // under PauseFieldManager. It re-sends neither the Cluster's references nor any
 // other field, so it never takes ownership of anything but spec.paused — the
 // day-2 equivalent of clusterctl's own setClusterPause patch.
-func setClusterPaused(ctx context.Context, deps Deps, cl kube.Cluster, live *unstructured.Unstructured, paused bool) error {
+func setClusterPaused(ctx context.Context, _ Deps, cl kube.Cluster, live *unstructured.Unstructured, paused bool) error {
 	u := &unstructured.Unstructured{Object: map[string]any{}}
 	u.SetGroupVersionKind(live.GroupVersionKind())
 	u.SetName(live.GetName())
@@ -219,7 +219,7 @@ func setClusterPaused(ctx context.Context, deps Deps, cl kube.Cluster, live *uns
 // pauseGuards runs the pause guards against the live cluster and returns the
 // blocking findings (a deletion in flight) and the advisory ones (mid-rollout,
 // unhealthy control plane). It never changes anything.
-func pauseGuards(ctx context.Context, deps Deps, cl kube.Cluster, live *unstructured.Unstructured, name string) (blocking, advisory []provider.Finding) {
+func pauseGuards(ctx context.Context, _ Deps, cl kube.Cluster, live *unstructured.Unstructured, name string) (blocking, advisory []provider.Finding) {
 	machines := clusterMachines(ctx, cl, name)
 
 	// Guard 1 (block): a deletion in flight. Pausing stalls it, because the
