@@ -35,6 +35,7 @@ import (
 	libvirtprovider "github.com/klotho-k8s/klotho/provider/infrastructure/libvirt"
 	linodeprovider "github.com/klotho-k8s/klotho/provider/infrastructure/linode"
 	proxmoxprovider "github.com/klotho-k8s/klotho/provider/infrastructure/proxmox"
+	vsphereprovider "github.com/klotho-k8s/klotho/provider/infrastructure/vsphere"
 	vzprovider "github.com/klotho-k8s/klotho/provider/infrastructure/vz"
 	"github.com/klotho-k8s/klotho/provider/payload"
 	s3payload "github.com/klotho-k8s/klotho/provider/payload/s3"
@@ -52,6 +53,7 @@ const (
 	providerHyperv  = "hyperv"
 	providerLibvirt = "libvirt"
 	providerVZ      = "vz"
+	providerVSphere = "vsphere"
 	cpKubeadm       = "kubeadm"
 	cpK0s           = "k0s"
 	cpRKE2          = "rke2"
@@ -522,8 +524,31 @@ func (a *app) infra(provider string) (infrastructure.Provider, error) {
 			CPUs:         v.CPUs,
 			EndpointHost: v.EndpointHost,
 		})}, nil
+	case providerVSphere:
+		v := a.cfg.VSphere
+		return vsphereInfra{vsphereprovider.New(nil, vsphereprovider.Config{
+			Server:           v.Server,
+			Username:         v.Username,
+			Password:         v.Password,
+			Thumbprint:       v.Thumbprint,
+			Insecure:         v.Insecure,
+			Datacenter:       v.Datacenter,
+			Datastore:        v.Datastore,
+			Folder:           v.Folder,
+			ResourcePool:     v.ResourcePool,
+			Network:          v.Network,
+			Template:         v.Template,
+			CloneMode:        v.CloneMode,
+			NumCPUs:          v.NumCPUs,
+			MemoryMiB:        v.MemoryMiB,
+			DiskGiB:          v.DiskGiB,
+			EndpointIP:       v.EndpointIP,
+			Port:             v.Port,
+			VIPInterface:     v.VIPInterface,
+			SSHAuthorizedKey: v.SSHAuthorizedKey,
+		})}, nil
 	default:
-		return nil, fmt.Errorf("infrastructure provider %q: %w (available: %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", provider, ErrNotImplemented, providerProxmox, providerDocker, providerAWS, providerLinode, providerGCP, providerHetzner, providerAzure, providerHyperv, providerLibvirt, providerVZ)
+		return nil, fmt.Errorf("infrastructure provider %q: %w (available: %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", provider, ErrNotImplemented, providerProxmox, providerDocker, providerAWS, providerLinode, providerGCP, providerHetzner, providerAzure, providerHyperv, providerLibvirt, providerVZ, providerVSphere)
 	}
 }
 
@@ -644,6 +669,22 @@ func (a *app) providerSecretData(provider string) map[string]string {
 		if len(data) > 0 {
 			return data
 		}
+	case providerVSphere:
+		// The flat template authenticates the in-cluster CAPV controller through a
+		// per-cluster identity Secret (built from VSPHERE_USERNAME/VSPHERE_PASSWORD
+		// in the bundle). These configSecret values cover a CAPV build that also
+		// reads global manager credentials; an empty username leaves them unset.
+		v := a.cfg.VSphere
+		data := map[string]string{}
+		if v.Username != "" {
+			data["VSPHERE_USERNAME"] = v.Username
+		}
+		if v.Password != "" {
+			data["VSPHERE_PASSWORD"] = v.Password
+		}
+		if len(data) > 0 {
+			return data
+		}
 	}
 	return nil
 }
@@ -699,6 +740,11 @@ type vzInfra struct{ *vzprovider.Provider }
 
 func (vzInfra) Tag(cluster string) string { return vzprovider.Tag(cluster) }
 
+// vsphereInfra adds the provider's tag convention to the vSphere provider.
+type vsphereInfra struct{ *vsphereprovider.Provider }
+
+func (vsphereInfra) Tag(cluster string) string { return vsphereprovider.Tag(cluster) }
+
 // kubeadmProvider adds the kubeadm provider's bootstrap machine naming.
 type kubeadmProvider struct{ *kubeadm.Provider }
 
@@ -737,9 +783,13 @@ var (
 	_ klotho.Tagger = hypervInfra{}
 	_ klotho.Tagger = libvirtInfra{}
 	_ klotho.Tagger = vzInfra{}
+	_ klotho.Tagger = vsphereInfra{}
 	// libvirt's MachineTemplate has no tags field (the CRD rejects the default
 	// spec.template.spec.tags); it tags via the domain description instead.
 	_ klotho.MachineTemplateTagger = libvirtInfra{}
+	// vSphere's VSphereMachineTemplate likewise rejects a tags string list (its
+	// field is tagIDs); it tags via the VM annotation instead.
+	_ klotho.MachineTemplateTagger = vsphereInfra{}
 	_ klotho.BootstrapNamer        = kubeadmProvider{}
 	_ klotho.BootstrapNamer        = k0sProvider{}
 	_ klotho.BootstrapNamer        = rke2Provider{}
@@ -757,6 +807,7 @@ var (
 	_ infrastructure.Provider      = hypervInfra{}
 	_ infrastructure.Provider      = libvirtInfra{}
 	_ infrastructure.Provider      = vzInfra{}
+	_ infrastructure.Provider      = vsphereInfra{}
 )
 
 func firstNonEmpty(s ...string) string {

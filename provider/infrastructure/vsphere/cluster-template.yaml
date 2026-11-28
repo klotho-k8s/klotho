@@ -1,0 +1,204 @@
+# klotho flat, single-node vSphere (Cluster API provider for vSphere, CAPV)
+# cluster template.
+#
+# It is authored in the Cluster API v1beta2 contract (object references use
+# apiGroup, not apiVersion), which is what klotho's generator requires. The
+# vSphere infrastructure objects are infrastructure.cluster.x-k8s.io/v1beta2,
+# CAPV's current govmomi-mode storage version.
+#
+# This is the EXPERIMENTAL single-node dev layout: one control-plane VM, no
+# workers, cloned from a vSphere template on one vCenter. klotho fills
+# CLUSTER_NAME, NAMESPACE, KUBERNETES_VERSION and CONTROL_PLANE_MACHINE_COUNT
+# itself, and the vSphere provider's Prepare fills VSPHERE_SERVER,
+# VSPHERE_TLS_THUMBPRINT, VSPHERE_DATACENTER, VSPHERE_DATASTORE, VSPHERE_FOLDER,
+# VSPHERE_RESOURCE_POOL, VSPHERE_NETWORK, VSPHERE_TEMPLATE, VSPHERE_USERNAME,
+# VSPHERE_PASSWORD, VSPHERE_SSH_AUTHORIZED_KEY and CONTROL_PLANE_ENDPOINT_IP
+# (the static VIP kube-vip holds, since vSphere has no load balancer).
+#
+# Unlike the upstream multi-node CAPV template, this flat layout runs NO vSphere
+# CPI/CSI: the kubelet self-registers its provider ID from the guestinfo
+# metadata instance-id (the VM's BIOS UUID, which klotho seeds), so the node
+# becomes Ready and the Machine<->Node ref completes with no cloud controller
+# manager. The template is a cloud-init (VMware guestinfo) enabled VM template.
+# If it carries no Kubernetes, create the cluster with "klotho create
+# --install-kubernetes" so containerd and the KUBERNETES_VERSION of
+# kubeadm/kubelet/kubectl are installed on the node before kubeadm runs.
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: "${CLUSTER_NAME}"
+  namespace: "${NAMESPACE}"
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks:
+      - 192.168.0.0/16
+  controlPlaneRef:
+    apiGroup: controlplane.cluster.x-k8s.io
+    kind: KubeadmControlPlane
+    name: "${CLUSTER_NAME}-control-plane"
+  infrastructureRef:
+    apiGroup: infrastructure.cluster.x-k8s.io
+    kind: VSphereCluster
+    name: "${CLUSTER_NAME}"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: VSphereCluster
+metadata:
+  name: "${CLUSTER_NAME}"
+  namespace: "${NAMESPACE}"
+spec:
+  server: "${VSPHERE_SERVER}"
+  thumbprint: "${VSPHERE_TLS_THUMBPRINT}"
+  # vSphere has no load balancer: klotho supplies a static VIP (held by the
+  # kube-vip static pod on node zero), which the provider only validates.
+  controlPlaneEndpoint:
+    host: "${CONTROL_PLANE_ENDPOINT_IP}"
+    port: 6443
+  # The in-cluster CAPV controller authenticates to vCenter with this per-cluster
+  # identity Secret (vSphere username/password).
+  identityRef:
+    kind: Secret
+    name: "${CLUSTER_NAME}"
+---
+apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+kind: KubeadmControlPlane
+metadata:
+  name: "${CLUSTER_NAME}-control-plane"
+  namespace: "${NAMESPACE}"
+spec:
+  replicas: ${CONTROL_PLANE_MACHINE_COUNT}
+  version: "${KUBERNETES_VERSION}"
+  machineTemplate:
+    spec:
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: VSphereMachineTemplate
+        name: "${CLUSTER_NAME}-control-plane"
+  kubeadmConfigSpec:
+    # The kube-vip static pod brings up the control plane VIP
+    # (CONTROL_PLANE_ENDPOINT_IP) so a single node, and later joiners, reach a
+    # stable API server address with no cloud load balancer.
+    files:
+    - path: /etc/kubernetes/manifests/kube-vip.yaml
+      owner: root:root
+      permissions: "0644"
+      content: |
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          name: kube-vip
+          namespace: kube-system
+        spec:
+          containers:
+          - name: kube-vip
+            image: ghcr.io/kube-vip/kube-vip:v0.8.0
+            imagePullPolicy: IfNotPresent
+            args:
+            - manager
+            env:
+            - name: cp_enable
+              value: "true"
+            - name: vip_interface
+              value: "${VIP_NETWORK_INTERFACE}"
+            - name: vip_arp
+              value: "true"
+            - name: port
+              value: "6443"
+            - name: vip_leaderelection
+              value: "true"
+            - name: vip_leasename
+              value: plndr-cp-lock
+            - name: vip_leaseduration
+              value: "15"
+            - name: vip_renewdeadline
+              value: "10"
+            - name: vip_retryperiod
+              value: "2"
+            - name: address
+              value: "${CONTROL_PLANE_ENDPOINT_IP}"
+            - name: vip_cidr
+              value: "32"
+            securityContext:
+              capabilities:
+                add:
+                - NET_ADMIN
+                - NET_RAW
+            volumeMounts:
+            - mountPath: /etc/kubernetes/admin.conf
+              name: kubeconfig
+          hostAliases:
+          - hostnames:
+            - kubernetes
+            ip: 127.0.0.1
+          hostNetwork: true
+          volumes:
+          - hostPath:
+              path: /etc/kubernetes/admin.conf
+            name: kubeconfig
+    preKubeadmCommands:
+    # kube-vip issue #684: for Kubernetes >= v1.29 the admin.conf kube-vip mounts
+    # during "kubeadm init" is super-admin.conf; rewrite the manifest so the VIP
+    # comes up before the API server is reachable.
+    - "if [ -f /etc/kubernetes/manifests/kube-vip.yaml ] && hostname | grep -q control-plane; then sed -i 's#path: /etc/kubernetes/admin.conf#path: /etc/kubernetes/super-admin.conf#' /etc/kubernetes/manifests/kube-vip.yaml; fi || true"
+    initConfiguration:
+      nodeRegistration:
+        criSocket: unix:///var/run/containerd/containerd.sock
+        name: '{{ ds.meta_data.local_hostname }}'
+        # No vSphere CPI runs in this flat layout, so the kubelet registers its
+        # own provider ID. ds.meta_data.instance_id is the VM's BIOS UUID (klotho
+        # seeds the guestinfo metadata with it), so this matches the adopted
+        # VSphereMachine's spec.providerID "vsphere://<uuid>" and the
+        # Machine<->Node nodeRef completes.
+        kubeletExtraArgs:
+        - name: provider-id
+          value: "vsphere://{{ ds.meta_data.instance_id }}"
+    joinConfiguration:
+      nodeRegistration:
+        criSocket: unix:///var/run/containerd/containerd.sock
+        name: '{{ ds.meta_data.local_hostname }}'
+        kubeletExtraArgs:
+        - name: provider-id
+          value: "vsphere://{{ ds.meta_data.instance_id }}"
+    users:
+    - name: capv
+      sshAuthorizedKeys:
+      - "${VSPHERE_SSH_AUTHORIZED_KEY}"
+      sudo: ALL=(ALL) NOPASSWD:ALL
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: VSphereMachineTemplate
+metadata:
+  name: "${CLUSTER_NAME}-control-plane"
+  namespace: "${NAMESPACE}"
+spec:
+  template:
+    spec:
+      server: "${VSPHERE_SERVER}"
+      thumbprint: "${VSPHERE_TLS_THUMBPRINT}"
+      # Name (or inventory path) of a cloud-init enabled VM template.
+      template: "${VSPHERE_TEMPLATE}"
+      datacenter: "${VSPHERE_DATACENTER}"
+      datastore: "${VSPHERE_DATASTORE}"
+      folder: "${VSPHERE_FOLDER}"
+      resourcePool: "${VSPHERE_RESOURCE_POOL}"
+      cloneMode: fullClone
+      numCPUs: 2
+      memoryMiB: 8192
+      diskGiB: 25
+      os: Linux
+      powerOffMode: trySoft
+      network:
+        devices:
+        - networkName: "${VSPHERE_NETWORK}"
+          dhcp4: true
+          dhcp6: false
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: "${CLUSTER_NAME}"
+  namespace: "${NAMESPACE}"
+stringData:
+  username: "${VSPHERE_USERNAME}"
+  password: "${VSPHERE_PASSWORD}"

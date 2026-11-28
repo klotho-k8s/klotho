@@ -23,6 +23,7 @@ require (
 	github.com/magefile/mage v1.17.2
 	github.com/pkg/errors v0.9.1
 	github.com/urfave/cli/v3 v3.14.0
+	github.com/vmware/govmomi v0.56.2
 	google.golang.org/api v0.264.0
 	google.golang.org/grpc v1.79.3
 	google.golang.org/protobuf v1.36.11

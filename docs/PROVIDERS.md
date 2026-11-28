@@ -47,8 +47,9 @@ inside)
 | Hetzner | CAPH | by name (no pre-set id) | $0 option (LB disabled) | ✅ | 🟡 **help wanted** | 🚧 finisher TODO | — |
 | Azure | CAPZ | by name (pre-set ok) | internal LB (forced) | ✅ | 🟡 **help wanted** | 🚧 finisher TODO | — |
 | Apple `vz` | CAPVZ | by name / `providerID` | node-zero IP | ✅ adapter | 🟡 awaiting Mac run | 🧹 daemon finisher (no deadlock) | macOS / Apple Silicon |
+| vSphere | CAPV | by `providerID` | kube-vip / user-supplied | ✅ | 🟡 **help wanted** | 🧹 govmomi external finisher (no sidecar) | — |
 
-*Planned next:* vSphere (CAPV), OpenStack (CAPO).
+*Planned next:* OpenStack (CAPO).
 
 ## Provider notes
 
@@ -143,6 +144,34 @@ removes the VMs through the daemon (the base image is untouched), so no deletion
 needed. Build + unit green on any OS (pure Go); **not yet run live** (needs an Apple-Silicon
 Mac). See `provider/infrastructure/vz/TESTING.md` for the Mac build/sign/run steps.
 
+### vSphere (CAPV) — help wanted
+Uses the upstream govmomi-based Cluster API provider for vSphere (CAPV), not the
+supervisor/vm-operator variant. klotho boots a `<cluster>-bootstrap` VM by cloning
+a vSphere template through the vCenter API with the official Go SDK
+[govmomi](https://github.com/vmware/govmomi), delivering the bootstrap user-data
+through the VMware **guestinfo** cloud-init datasource (`guestinfo.userdata` /
+`guestinfo.metadata`, base64), and reads the VM's BIOS UUID for the provider ID
+`vsphere://<uuid>`. vSphere has no cloud load balancer, so the control-plane
+endpoint is a static VIP the user supplies (`CONTROL_PLANE_ENDPOINT_IP`), realised
+by a kube-vip static pod on node zero. The flat single-node template runs **no
+vSphere CPI/CSI**: the kubelet self-registers its provider ID from the guestinfo
+metadata instance-id, so the Machine<->Node ref completes with no cloud controller
+manager. Because vCenter is reachable from outside the cluster (like Proxmox),
+teardown is the clean external finisher — klotho's own `Teardown` powers off and
+deletes the VMs through govmomi (the template is untouched), so no deletion
+sidecar is needed.
+
+**Adoption is `providerID`-based (CAPL-style), and unverified live.** CAPV has no
+field to adopt a pre-existing VM by name — its only native create path is
+clone-from-template, and it identifies its VM by the BIOS UUID behind the provider
+ID (confirmed against the `infrastructure.cluster.x-k8s.io/v1beta2` govmomi-mode
+CRDs on CAPV `main`). So klotho pre-sets the `VSphereMachine`'s `spec.providerID`
+to the running VM's `vsphere://<uuid>`, intending CAPV to adopt it rather than
+clone a duplicate. This is **not** an officially documented CAPV feature and MUST
+be confirmed on a live vCenter — see `provider/infrastructure/vsphere/TESTING.md`.
+Build + unit green; **never run live** (no vCenter in the dev environment; `vcsim`
+runs no real VMs, so it cannot exercise the lifecycle).
+
 ## Help wanted — test on your environment
 
 If you have access to any of these, you can move a provider from 🟡 to ✅:
@@ -152,7 +181,9 @@ If you have access to any of these, you can move a provider from 🟡 to ✅:
 - **Linode** — an API token. Run `provider/infrastructure/linode/TESTING.md`.
 - **Hetzner Cloud** — an hcloud API token and an SSH key in the project. Run
   `provider/infrastructure/hetzner/TESTING.md`.
-- **vSphere / OpenStack** — provider work is planned; if you'd run the live test,
+- **vSphere** — a vCenter + ESXi host. Run `provider/infrastructure/vsphere/TESTING.md`
+  (confirm CAPV adopts node zero rather than cloning a duplicate — the unverified path).
+- **OpenStack** — provider work is planned; if you'd run the live test,
   tell us and we'll prioritize that provider.
 
 For each run, the three things we care about:
