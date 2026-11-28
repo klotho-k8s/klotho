@@ -107,7 +107,7 @@ func (f *fakeClient) NetworkIDByName(_ context.Context, name string) (string, er
 	return "net-" + name, nil
 }
 
-func (f *fakeClient) AllocateFloatingIP(_ context.Context, externalNetworkID, _ string) (*FloatingIP, error) {
+func (f *fakeClient) AllocateFloatingIP(_ context.Context, _, _ string) (*FloatingIP, error) {
 	f.nextFIP++
 	fip := &FloatingIP{ID: fmt.Sprintf("fip-%d", f.nextFIP), Address: f.fipAddr}
 	f.fips[fip.ID] = fip
