@@ -17,6 +17,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
+	"github.com/klotho-k8s/klotho/pkg/autoscaler"
 	"github.com/klotho-k8s/klotho/pkg/cloudinit"
 	"github.com/klotho-k8s/klotho/pkg/cluster"
 	"github.com/klotho-k8s/klotho/pkg/generate"
@@ -108,6 +109,13 @@ type CreateRequest struct {
 	// kubeadm runs. InstallOptions point it at local caches.
 	InstallKubernetes bool
 	InstallOptions    generate.InstallKubernetesOptions
+	// Autoscaler installs the Cluster Autoscaler add-on (the clusterapi cloud
+	// provider) into a generated bundle and stamps the node-group min/max
+	// annotations on every worker MachineDeployment. AutoscalerOptions tune the
+	// sizes, version and image; ClusterName, MachineNamespace and
+	// KubernetesVersion are filled from the request.
+	Autoscaler        bool
+	AutoscalerOptions autoscaler.Options
 	// DryRunDir, when set, renders everything into this directory and
 	// returns without launching anything.
 	DryRunDir string
@@ -590,7 +598,62 @@ func buildBundle(ctx context.Context, deps Deps, req CreateRequest, spec cluster
 			return nil, fmt.Errorf("bundle: %w", err)
 		}
 	}
+	if req.Autoscaler {
+		if err := addAutoscaler(b, req, spec, log); err != nil {
+			return nil, err
+		}
+	}
 	return b, nil
+}
+
+// addAutoscaler renders the Cluster Autoscaler add-on and wires it into the
+// bundle: it stamps the node-group min/max annotations on every worker
+// MachineDeployment and appends the install objects. It reports advisory
+// findings (no worker pool to scale, version skew) through the logger; like the
+// rest of create it never edits a user's cluster YAML to resolve one, and the
+// add-on is klotho's own objects.
+func addAutoscaler(b *generate.Bundle, req CreateRequest, spec cluster.Spec, log *slog.Logger) error {
+	opts := req.AutoscalerOptions
+	opts.ClusterName = spec.Name
+	if opts.KubernetesVersion == "" {
+		opts.KubernetesVersion = req.Kubernetes
+	}
+	install, err := autoscaler.InstallObjects(opts)
+	if err != nil {
+		return fmt.Errorf("bundle: %w", err)
+	}
+	od := opts
+	min, max := autoscalerSizes(od)
+	stamped, err := generate.SetAutoscaler(b, install, autoscaler.MinMaxAnnotations(min, max))
+	if err != nil {
+		return fmt.Errorf("bundle: %w", err)
+	}
+	log.Info("adding the cluster-autoscaler add-on", "min", min, "max", max, "machineDeployments", stamped)
+	if stamped == 0 {
+		log.Warn("autoscaler finding: the bundle has no worker MachineDeployment to scale; the autoscaler installs but has nothing to autoscale until a worker pool exists (create with --worker-count N)",
+			"object", "MachineDeployment", "cluster", spec.Name)
+	}
+	if skew := od.SkewFinding(); skew != "" {
+		log.Warn("autoscaler finding: "+skew, "object", "Deployment/"+autoscaler.Name, "field", "spec.template.spec.containers[0].image")
+	}
+	if min == 0 {
+		log.Warn("autoscaler finding: min size 0 enables scale-to-zero, but a pool only grows 0->1 when the autoscaler can read a would-be node's capacity; klotho grants it read access to the infrastructure MachineTemplate, which works only where the provider publishes template capacity - otherwise set the capacity.cluster-autoscaler.kubernetes.io/* annotations by hand (see docs/AUTOSCALER.md)",
+			"object", "MachineDeployment", "field", "metadata.annotations")
+	}
+	return nil
+}
+
+// autoscalerSizes resolves the min/max a request's options describe, applying
+// the same defaults the add-on module does.
+func autoscalerSizes(o autoscaler.Options) (min, max int) {
+	min, max = o.MinSize, o.MaxSize
+	if max == 0 && min == 0 {
+		return autoscaler.DefaultMinSize, autoscaler.DefaultMaxSize
+	}
+	if max == 0 {
+		max = min
+	}
+	return min, max
 }
 
 func writeDryRun(ctx context.Context, deps Deps, req CreateRequest, st *cluster.State, ci *cloudinit.Bundle,

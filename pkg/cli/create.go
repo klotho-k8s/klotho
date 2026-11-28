@@ -13,6 +13,7 @@ import (
 	"github.com/urfave/cli/v3"
 
 	"github.com/klotho-k8s/klotho"
+	"github.com/klotho-k8s/klotho/pkg/autoscaler"
 	"github.com/klotho-k8s/klotho/pkg/cluster"
 	"github.com/klotho-k8s/klotho/pkg/config"
 	"github.com/klotho-k8s/klotho/pkg/credential"
@@ -107,6 +108,28 @@ func newCreateCommand() *cli.Command {
 				Name:  "install-kubernetes",
 				Usage: "install containerd and the bundle's Kubernetes version on every node at boot, for plain images (nodes.installKubernetes; --install-kubernetes=false overrides it)",
 			},
+			&cli.BoolFlag{
+				Name:  "autoscaler",
+				Usage: "install the Cluster Autoscaler add-on (clusterapi provider) and stamp node-group min/max on the worker MachineDeployment(s)",
+			},
+			&cli.IntFlag{
+				Name:  "autoscaler-min",
+				Usage: "autoscaler node-group minimum per worker pool (default 1; 0 enables scale-to-zero, which needs node capacity the provider may not publish)",
+				Value: 1,
+			},
+			&cli.IntFlag{
+				Name:  "autoscaler-max",
+				Usage: "autoscaler node-group maximum per worker pool (default 5)",
+				Value: 5,
+			},
+			&cli.StringFlag{
+				Name:  "autoscaler-version",
+				Usage: "autoscaler image tag, e.g. v1.33.4 (default: track the cluster's Kubernetes version)",
+			},
+			&cli.StringFlag{
+				Name:  "autoscaler-image",
+				Usage: "fully override the autoscaler image (repo:tag), for a mirror or fork",
+			},
 			&cli.DurationFlag{
 				Name:  "wait-timeout",
 				Usage: "bound for each wait on the new cluster (0: 15m for the API server, 10m otherwise)",
@@ -194,6 +217,13 @@ func runCreate(ctx context.Context, c *cli.Command) error {
 		Force:                c.Bool("force"),
 		InstallKubernetes:    installKubernetes(c, a.cfg, cp),
 		InstallOptions:       a.cfg.Nodes.InstallOptions(),
+		Autoscaler:           c.Bool("autoscaler"),
+		AutoscalerOptions: autoscaler.Options{
+			MinSize: int(c.Int("autoscaler-min")),
+			MaxSize: int(c.Int("autoscaler-max")),
+			Version: c.String("autoscaler-version"),
+			Image:   c.String("autoscaler-image"),
+		},
 		CAPI: generate.CAPIOptions{
 			Version:              a.cfg.CAPI.Version,
 			FetchURL:             a.cfg.CAPI.FetchURL,
