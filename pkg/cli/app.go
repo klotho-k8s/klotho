@@ -18,6 +18,7 @@ import (
 	"github.com/klotho-k8s/klotho/pkg/config"
 	"github.com/klotho-k8s/klotho/pkg/state"
 	"github.com/klotho-k8s/klotho/provider/backend"
+	azureblobbackend "github.com/klotho-k8s/klotho/provider/backend/azureblob"
 	filebackend "github.com/klotho-k8s/klotho/provider/backend/file"
 	proxmoxbackend "github.com/klotho-k8s/klotho/provider/backend/proxmox"
 	s3backend "github.com/klotho-k8s/klotho/provider/backend/s3"
@@ -171,6 +172,20 @@ func newApp(c *cli.Command) (*app, error) {
 			UsePathStyle:    s.UsePathStyle,
 			AccessKeyID:     s.AccessKeyID,
 			SecretAccessKey: s.SecretAccessKey,
+		}, codec)
+		if err != nil {
+			return nil, err
+		}
+		a.store = store
+	case config.BackendAzureBlob:
+		ab := cfg.AzureBlob
+		store, err := azureblobbackend.New(context.Background(), azureblobbackend.Config{
+			AccountName:      ab.AccountName,
+			Endpoint:         ab.Endpoint,
+			Container:        ab.Container,
+			Prefix:           ab.Prefix,
+			ConnectionString: ab.ConnectionString,
+			AccountKey:       ab.AccountKey,
 		}, codec)
 		if err != nil {
 			return nil, err
