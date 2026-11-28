@@ -90,9 +90,7 @@ func vmView(name string, mvm *mo.VirtualMachine) *VM {
 		v.Annotation = mvm.Summary.Config.Annotation
 	}
 	v.PoweredOn = mvm.Runtime.PowerState == types.VirtualMachinePowerStatePoweredOn
-	for _, ip := range guestIPv4s(mvm) {
-		v.Addresses = append(v.Addresses, ip)
-	}
+	v.Addresses = append(v.Addresses, guestIPv4s(mvm)...)
 	return v
 }
 
