@@ -38,6 +38,7 @@ import (
 	"time"
 
 	"filippo.io/age"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/yaml"
 
 	"github.com/klotho-k8s/klotho/pkg/generate"
@@ -202,9 +203,10 @@ const (
 
 // Backend names.
 const (
-	BackendFile    = "file"
-	BackendProxmox = "proxmox"
-	BackendS3      = "s3"
+	BackendFile       = "file"
+	BackendProxmox    = "proxmox"
+	BackendS3         = "s3"
+	BackendKubernetes = "kubernetes"
 )
 
 // Payload host kinds.
@@ -230,6 +232,9 @@ type Config struct {
 	// S3Backend configures the s3 state backend. It is used only when the
 	// effective backend is "s3".
 	S3Backend S3Backend `json:"s3,omitempty"`
+	// Kubernetes configures the kubernetes (Secret) state backend. It is used
+	// only when the effective backend is "kubernetes".
+	Kubernetes KubernetesBackend `json:"kubernetes,omitempty"`
 	// SSHAuthorizedKeys are installed for the bootstrap node's default user.
 	SSHAuthorizedKeys []string     `json:"sshAuthorizedKeys,omitempty"`
 	Encryption        Encryption   `json:"encryption,omitempty"`
@@ -1126,6 +1131,36 @@ func (s S3Backend) problems() []string {
 	return problems
 }
 
+// KubernetesBackend configures the kubernetes state backend: each cluster's
+// already-sealed state record is stored as one Opaque Secret
+// (klotho-state-<cluster>) in a namespace of a separate, already-running target
+// cluster. The backend never holds a plaintext state or a usable credential.
+//
+// The target cluster cannot be the one being bootstrapped (it does not exist
+// when its own state must first be written), so this backend is for teams that
+// already run a management or utility cluster.
+type KubernetesBackend struct {
+	// Kubeconfig is the path to the kubeconfig of the target cluster. Empty uses
+	// the standard loading rules (KUBECONFIG, then ~/.kube/config).
+	Kubeconfig string `json:"kubeconfig,omitempty"`
+	// Context selects a context within the kubeconfig; empty uses its
+	// current-context.
+	Context string `json:"context,omitempty"`
+	// Namespace holds the Secrets; empty means "default".
+	Namespace string `json:"namespace,omitempty"`
+}
+
+// problems lists what is wrong with a kubernetes backend section.
+func (k KubernetesBackend) problems() []string {
+	var problems []string
+	if k.Namespace != "" {
+		if errs := validation.IsDNS1123Label(k.Namespace); len(errs) > 0 {
+			problems = append(problems, fmt.Sprintf("kubernetes.namespace %q: %s", k.Namespace, strings.Join(errs, "; ")))
+		}
+	}
+	return problems
+}
+
 // CAPI configures the Cluster API core, bootstrap and control plane
 // providers the operator installs, and the bootstrap node's add-ons.
 type CAPI struct {
@@ -1778,8 +1813,10 @@ func (c *Config) Validate() error {
 	case "", BackendFile, BackendProxmox:
 	case BackendS3:
 		problems = append(problems, c.S3Backend.problems()...)
+	case BackendKubernetes:
+		problems = append(problems, c.Kubernetes.problems()...)
 	default:
-		problems = append(problems, fmt.Sprintf("backend %q is not one of %s, %s, %s", c.Backend, BackendProxmox, BackendFile, BackendS3))
+		problems = append(problems, fmt.Sprintf("backend %q is not one of %s, %s, %s, %s", c.Backend, BackendProxmox, BackendFile, BackendS3, BackendKubernetes))
 	}
 	switch c.Payload.Kind {
 	case "":
