@@ -192,6 +192,9 @@ type Config struct {
 	// providers installed for --control-plane rke2. Empty fields use built-in
 	// defaults.
 	RKE2 RKE2 `json:"rke2,omitempty"`
+	// K3s configures the cluster-api-k3s bootstrap and control-plane providers
+	// installed for --control-plane k3s. Empty fields use built-in defaults.
+	K3s K3s `json:"k3s,omitempty"`
 	// Nodes configures what every node of a generated cluster does at boot.
 	Nodes Nodes `json:"nodes,omitempty"`
 	// Providers pins infrastructure provider releases by provider name.
@@ -885,6 +888,24 @@ type RKE2 struct {
 	// BootstrapNamespace and ControlPlaneNamespace are where the RKE2 bootstrap
 	// and control-plane providers run (defaults rke2-bootstrap-system and
 	// rke2-control-plane-system).
+	BootstrapNamespace    string `json:"bootstrapNamespace,omitempty"`
+	ControlPlaneNamespace string `json:"controlPlaneNamespace,omitempty"`
+	// BootstrapURL and ControlPlaneURL override the components manifests the
+	// in-cluster operator fetches. Empty derives them from the release assets
+	// for Version.
+	BootstrapURL    string `json:"bootstrapURL,omitempty"`
+	ControlPlaneURL string `json:"controlPlaneURL,omitempty"`
+}
+
+// K3s pins the cluster-api-k3s bootstrap and control-plane provider release the
+// Cluster API operator installs for --control-plane k3s. Empty fields fall back
+// to the k3s provider's built-in defaults.
+type K3s struct {
+	// Version is the cluster-api-k3s release, e.g. v0.5.1.
+	Version string `json:"version,omitempty"`
+	// BootstrapNamespace and ControlPlaneNamespace are where the k3s bootstrap
+	// and control-plane providers run (defaults capi-k3s-bootstrap-system and
+	// capi-k3s-control-plane-system).
 	BootstrapNamespace    string `json:"bootstrapNamespace,omitempty"`
 	ControlPlaneNamespace string `json:"controlPlaneNamespace,omitempty"`
 	// BootstrapURL and ControlPlaneURL override the components manifests the

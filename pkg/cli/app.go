@@ -22,6 +22,7 @@ import (
 	s3backend "github.com/klotho-k8s/klotho/provider/backend/s3"
 	"github.com/klotho-k8s/klotho/provider/controlplane"
 	"github.com/klotho-k8s/klotho/provider/controlplane/k0s"
+	"github.com/klotho-k8s/klotho/provider/controlplane/k3s"
 	"github.com/klotho-k8s/klotho/provider/controlplane/kubeadm"
 	"github.com/klotho-k8s/klotho/provider/controlplane/rke2"
 	"github.com/klotho-k8s/klotho/provider/infrastructure"
@@ -52,6 +53,7 @@ const (
 	cpKubeadm       = "kubeadm"
 	cpK0s           = "k0s"
 	cpRKE2          = "rke2"
+	cpK3s           = "k3s"
 )
 
 // app is what every command builds first: configuration, codec, store,
@@ -267,8 +269,16 @@ func (a *app) withProviders(provider, cp, kubeVersion string) (klotho.Deps, erro
 			CNIManifestURL:    a.cfg.CAPI.CNIManifestURL,
 			ContainerNodes:    containerNodes,
 		})}
+	case cpK3s:
+		d.ControlPlane = k3sProvider{k3s.New(k3s.Options{
+			KubernetesVersion: kubeVersion,
+			CertManagerURL:    a.cfg.CAPI.CertManagerURL,
+			OperatorURL:       a.cfg.CAPI.OperatorURL,
+			CNIManifestURL:    a.cfg.CAPI.CNIManifestURL,
+			ContainerNodes:    containerNodes,
+		})}
 	default:
-		return d, fmt.Errorf("control plane provider %q: %w (available: %s, %s, %s)", cp, ErrNotImplemented, cpKubeadm, cpK0s, cpRKE2)
+		return d, fmt.Errorf("control plane provider %q: %w (available: %s, %s, %s, %s)", cp, ErrNotImplemented, cpKubeadm, cpK0s, cpRKE2, cpK3s)
 	}
 	d.Infra = infra
 	return d, nil
@@ -682,6 +692,13 @@ func (rke2Provider) BootstrapMachineName(cluster string) string {
 	return rke2.BootstrapMachineName(cluster)
 }
 
+// k3sProvider adds the k3s provider's bootstrap machine naming.
+type k3sProvider struct{ *k3s.Provider }
+
+func (k3sProvider) BootstrapMachineName(cluster string) string {
+	return k3s.BootstrapMachineName(cluster)
+}
+
 var (
 	_ klotho.Tagger = proxmoxInfra{}
 	_ klotho.Tagger = awsInfra{}
@@ -697,9 +714,11 @@ var (
 	_ klotho.BootstrapNamer        = kubeadmProvider{}
 	_ klotho.BootstrapNamer        = k0sProvider{}
 	_ klotho.BootstrapNamer        = rke2Provider{}
+	_ klotho.BootstrapNamer        = k3sProvider{}
 	_ controlplane.Provider        = kubeadmProvider{}
 	_ controlplane.Provider        = k0sProvider{}
 	_ controlplane.Provider        = rke2Provider{}
+	_ controlplane.Provider        = k3sProvider{}
 	_ infrastructure.Provider      = proxmoxInfra{}
 	_ infrastructure.Provider      = awsInfra{}
 	_ infrastructure.Provider      = linodeInfra{}
