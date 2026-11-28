@@ -19,6 +19,7 @@ import (
 	"github.com/klotho-k8s/klotho/pkg/state"
 	"github.com/klotho-k8s/klotho/provider/backend"
 	filebackend "github.com/klotho-k8s/klotho/provider/backend/file"
+	gcsbackend "github.com/klotho-k8s/klotho/provider/backend/gcs"
 	proxmoxbackend "github.com/klotho-k8s/klotho/provider/backend/proxmox"
 	s3backend "github.com/klotho-k8s/klotho/provider/backend/s3"
 	"github.com/klotho-k8s/klotho/provider/controlplane"
@@ -171,6 +172,17 @@ func newApp(c *cli.Command) (*app, error) {
 			UsePathStyle:    s.UsePathStyle,
 			AccessKeyID:     s.AccessKeyID,
 			SecretAccessKey: s.SecretAccessKey,
+		}, codec)
+		if err != nil {
+			return nil, err
+		}
+		a.store = store
+	case config.BackendGCS:
+		g := cfg.GCSBackend
+		store, err := gcsbackend.New(context.Background(), gcsbackend.Config{
+			Bucket:          g.Bucket,
+			Prefix:          g.Prefix,
+			CredentialsFile: g.CredentialsFile,
 		}, codec)
 		if err != nil {
 			return nil, err

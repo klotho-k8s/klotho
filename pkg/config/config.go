@@ -205,6 +205,7 @@ const (
 	BackendFile    = "file"
 	BackendProxmox = "proxmox"
 	BackendS3      = "s3"
+	BackendGCS     = "gcs"
 )
 
 // Payload host kinds.
@@ -218,9 +219,10 @@ const DefaultPresignTTL = time.Hour
 
 // Config is the merged configuration.
 type Config struct {
-	// Backend is "proxmox", "file" or "s3". Empty means the infrastructure
-	// provider's native store when it has one and is configured, else file;
-	// see EffectiveBackend. "s3" is never inferred and must be set explicitly.
+	// Backend is "proxmox", "file", "s3" or "gcs". Empty means the
+	// infrastructure provider's native store when it has one and is configured,
+	// else file; see EffectiveBackend. "s3" and "gcs" are never inferred and
+	// must be set explicitly.
 	Backend string `json:"backend,omitempty"`
 	// Payload configures the host that serves files too large for a
 	// provider's user-data channel. Unset means none.
@@ -230,6 +232,9 @@ type Config struct {
 	// S3Backend configures the s3 state backend. It is used only when the
 	// effective backend is "s3".
 	S3Backend S3Backend `json:"s3,omitempty"`
+	// GCSBackend configures the gcs state backend. It is used only when the
+	// effective backend is "gcs".
+	GCSBackend GCSBackend `json:"gcs,omitempty"`
 	// SSHAuthorizedKeys are installed for the bootstrap node's default user.
 	SSHAuthorizedKeys []string     `json:"sshAuthorizedKeys,omitempty"`
 	Encryption        Encryption   `json:"encryption,omitempty"`
@@ -1126,6 +1131,30 @@ func (s S3Backend) problems() []string {
 	return problems
 }
 
+// GCSBackend configures the gcs state backend on Google Cloud Storage. The
+// backend stores each cluster's already-sealed state record as one object; it
+// never holds a plaintext state or a usable credential.
+type GCSBackend struct {
+	// Bucket must exist; klotho does not create it. Required when backend is gcs.
+	Bucket string `json:"bucket,omitempty"`
+	// Prefix is a key prefix below which every record is stored.
+	Prefix string `json:"prefix,omitempty"`
+	// CredentialsFile is a path to a service-account key JSON. Empty uses
+	// Application Default Credentials. It is read from
+	// GOOGLE_APPLICATION_CREDENTIALS when unset. A path is not a credential, so
+	// it may live in the config file; the key contents never do.
+	CredentialsFile string `json:"credentialsFile,omitempty"`
+}
+
+// problems lists what is wrong with a GCS backend section.
+func (g GCSBackend) problems() []string {
+	var problems []string
+	if g.Bucket == "" {
+		problems = append(problems, "gcs.bucket is required when backend is gcs")
+	}
+	return problems
+}
+
 // CAPI configures the Cluster API core, bootstrap and control plane
 // providers the operator installs, and the bootstrap node's add-ons.
 type CAPI struct {
@@ -1644,6 +1673,11 @@ func (c *Config) applyEnv() error {
 			c.GCP.CredentialsFile = v
 		}
 	}
+	if c.GCSBackend.CredentialsFile == "" {
+		if v, ok := os.LookupEnv(EnvGCPCredentials); ok && v != "" {
+			c.GCSBackend.CredentialsFile = v
+		}
+	}
 	if c.OpenStack.Cloud == "" {
 		// OS_CLOUD is the standard OpenStack environment selector for a clouds.yaml
 		// entry.
@@ -1778,8 +1812,10 @@ func (c *Config) Validate() error {
 	case "", BackendFile, BackendProxmox:
 	case BackendS3:
 		problems = append(problems, c.S3Backend.problems()...)
+	case BackendGCS:
+		problems = append(problems, c.GCSBackend.problems()...)
 	default:
-		problems = append(problems, fmt.Sprintf("backend %q is not one of %s, %s, %s", c.Backend, BackendProxmox, BackendFile, BackendS3))
+		problems = append(problems, fmt.Sprintf("backend %q is not one of %s, %s, %s, %s", c.Backend, BackendProxmox, BackendFile, BackendS3, BackendGCS))
 	}
 	switch c.Payload.Kind {
 	case "":
@@ -1991,7 +2027,7 @@ func Init(identityFile string) (publicKey string, err error) {
 // Skeleton is the commented configuration file "klotho init" writes when
 // none exists.
 const Skeleton = `# klotho configuration. Every field is optional; see "klotho --help".
-# backend: proxmox            # or file, s3; default: proxmox when proxmox.url is set
+# backend: proxmox            # or file, s3, gcs; default: proxmox when proxmox.url is set
 # stateDir: ~/.local/state/klotho
 # s3:                        # state backend; used only when backend: s3
 #   endpoint: http://minio.example:9000   # omit for AWS S3
@@ -2001,6 +2037,11 @@ const Skeleton = `# klotho configuration. Every field is optional; see "klotho -
 #   usePathStyle: true       # needed by MinIO
 #   # keys: set KLOTHO_S3_ACCESS_KEY_ID and KLOTHO_S3_SECRET_ACCESS_KEY,
 #   # or leave both unset to use the AWS credential chain
+# gcs:                       # state backend; used only when backend: gcs
+#   bucket: klotho-state
+#   prefix: clusters
+#   # credentialsFile: ~/sa.json   # a path, not a key; empty uses Application
+#   #                              # Default Credentials (GOOGLE_APPLICATION_CREDENTIALS)
 # encryption:
 #   identityFile: ~/.config/klotho/identity.txt
 #   recipients: []           # default: the identity file's public keys

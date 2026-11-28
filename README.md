@@ -72,6 +72,28 @@ klotho reads `$XDG_CONFIG_HOME/klotho/config.yaml` (`~/.config/klotho/config.yam
 merges an optional `--profile` over it, then applies environment variables.
 `klotho init` writes a commented skeleton. Every field is optional.
 
+### State backend
+
+klotho records a small, already-encrypted state blob per cluster. The `backend`
+field selects where it lives: `file` (the default, under `stateDir`), `proxmox`
+(the Proxmox provider's native store, used by default when `proxmox.url` is
+set), `s3` (any S3-compatible object store) or `gcs` (Google Cloud Storage).
+`s3` and `gcs` are never inferred and must be set explicitly.
+
+```yaml
+backend: gcs
+gcs:
+  bucket: klotho-state                   # required; must already exist
+  prefix: clusters                       # optional key prefix
+  # credentialsFile: /etc/klotho/sa.json # a path, not a key; empty uses ADC
+```
+
+The GCS backend authenticates with Application Default Credentials
+(`GOOGLE_APPLICATION_CREDENTIALS`, a `gcloud` login, or the host's attached
+service account) and claims names atomically with object generation
+preconditions. See `provider/backend/gcs/README.md` (and
+`provider/backend/s3/README.md` for the S3-compatible equivalent).
+
 ### Payload host (S3)
 
 A payload host serves files that are too large for the infrastructure
@@ -213,6 +235,9 @@ the code:
 
 - `provider/backend/proxmox/README.md`: why cluster state is kept in the
   comment of an empty Proxmox resource pool, what was rejected, and the limits.
+- `provider/backend/gcs/README.md`: the Google Cloud Storage state backend,
+  how it claims names atomically with generation preconditions, and its
+  Application Default Credentials auth.
 - `provider/payload/host.go`: why a payload host exists, how large klotho's
   user-data actually is, which providers' user-data caps it exceeds, and how
   to measure your own. The S3 host is implemented and tested; the create
