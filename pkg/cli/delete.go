@@ -12,7 +12,6 @@ import (
 	"github.com/urfave/cli/v3"
 
 	"github.com/klotho-k8s/klotho"
-	"github.com/klotho-k8s/klotho/provider/controlplane/kubeadm"
 	"github.com/klotho-k8s/klotho/provider/infrastructure"
 )
 
@@ -67,7 +66,11 @@ func newDeleteCommand() *cli.Command {
 				if provider == "" {
 					provider = providerProxmox
 				}
-				if deps, err = a.withProviders(provider, cpKubeadm, kubeadm.Options{}); err != nil {
+				cp := st.Spec.ControlPlane
+				if cp == "" {
+					cp = cpKubeadm
+				}
+				if deps, err = a.withProviders(provider, cp, ""); err != nil {
 					return err
 				}
 			}

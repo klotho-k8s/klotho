@@ -134,6 +134,14 @@ type CAPIOptions struct {
 	// InfraNamespace is where the infrastructure provider runs. Empty means
 	// DefaultInfraNamespace(InfraProviderName).
 	InfraNamespace string
+	// Bootstrap and ControlPlane select the bootstrap and control-plane
+	// providers the operator installs. Zero fields default to the kubeadm
+	// providers fetched from the core Cluster API release (so a cluster whose
+	// control plane is kubeadm needs set neither). A control-plane provider
+	// such as k0s sets them to the k0smotron providers, which carry their own
+	// name, namespace, version and components URL.
+	Bootstrap    ProviderInstall
+	ControlPlane ProviderInstall
 	// ProviderSecretData becomes the infrastructure provider's configSecret,
 	// for example PROXMOX_URL, PROXMOX_TOKEN and PROXMOX_SECRET.
 	ProviderSecretData map[string]string
@@ -141,6 +149,67 @@ type CAPIOptions struct {
 	// (see provider.Dependent); they are installed and waited for like the
 	// four standard ones.
 	Extra []provider.Dependency
+}
+
+// ProviderInstall identifies a bootstrap or control-plane provider for the
+// Cluster API operator to install. Zero fields default to the kubeadm provider
+// fetched from the core Cluster API release; a provider from another project
+// (k0smotron) sets its own name, namespace, version and components URL.
+type ProviderInstall struct {
+	// Name is the operator provider name (for example "kubeadm" or
+	// "k0sproject-k0smotron").
+	Name string
+	// Namespace is where the provider runs.
+	Namespace string
+	// Version is the provider version. Empty uses CAPIOptions.Version.
+	Version string
+	// ComponentsURL is the full URL of the components manifest. Empty uses the
+	// core Cluster API release layout (CAPIOptions.FetchURL + the component
+	// file name).
+	ComponentsURL string
+}
+
+// resolved fills a bootstrap/control-plane provider's defaults: the kubeadm
+// name and the given namespace, CAPIOptions.Version, and the CAPI-release
+// component file under FetchURL when ComponentsURL is unset.
+func (o CAPIOptions) resolved(p ProviderInstall, defaultNS, componentFile string) (name, ns, version string, fetch map[string]any) {
+	name = p.Name
+	if name == "" {
+		name = KubeadmProviderName
+	}
+	ns = p.Namespace
+	if ns == "" {
+		ns = defaultNS
+	}
+	version = p.Version
+	if version == "" {
+		version = o.Version
+	}
+	if p.ComponentsURL != "" {
+		return name, ns, version, map[string]any{"url": p.ComponentsURL}
+	}
+	return name, ns, version, o.fetch(componentFile)
+}
+
+func (o CAPIOptions) bootstrap() (name, ns, version string, fetch map[string]any) {
+	return o.resolved(o.Bootstrap, BootstrapNamespace, BootstrapComponents)
+}
+
+func (o CAPIOptions) controlPlane() (name, ns, version string, fetch map[string]any) {
+	return o.resolved(o.ControlPlane, ControlPlaneNamespace, ControlPlaneComponents)
+}
+
+// fetch is the fetchConfig for a core Cluster API release component file, or
+// nil when no release directory (FetchURL) is set.
+func (o CAPIOptions) fetch(file string) map[string]any {
+	if o.FetchURL == "" {
+		return nil
+	}
+	base := o.FetchURL
+	if !strings.HasSuffix(base, "/") {
+		base += "/"
+	}
+	return map[string]any{"url": base + file}
 }
 
 // DefaultInfraNamespace returns the namespace an infrastructure provider
@@ -175,10 +244,12 @@ type OperatorProviderRef struct {
 // OperatorProviderRefs lists the operator provider objects klotho installs: the
 // core, bootstrap, control-plane and infrastructure providers, plus any extras.
 func (o CAPIOptions) OperatorProviderRefs() []OperatorProviderRef {
+	bName, bNS, _, _ := o.bootstrap()
+	cpName, cpNS, _, _ := o.controlPlane()
 	refs := []OperatorProviderRef{
 		{KindCoreProvider, CoreNamespace, CoreProviderName},
-		{KindBootstrapProvider, BootstrapNamespace, KubeadmProviderName},
-		{KindControlPlaneProvider, ControlPlaneNamespace, KubeadmProviderName},
+		{KindBootstrapProvider, bNS, bName},
+		{KindControlPlaneProvider, cpNS, cpName},
 		{KindInfrastructureProvider, o.infraNamespace(), o.InfraProviderName},
 	}
 	for _, d := range o.Extra {
@@ -204,8 +275,15 @@ func ProviderObjects(o CAPIOptions, redact bool) ([]*unstructured.Unstructured, 
 		return nil, fmt.Errorf("klotho: infrastructure provider name and version are required")
 	}
 	infraNS := o.infraNamespace()
+	bName, bNS, bVersion, bFetch := o.bootstrap()
+	cpName, cpNS, cpVersion, cpFetch := o.controlPlane()
 	var objs []*unstructured.Unstructured
-	namespaces := []string{CoreNamespace, BootstrapNamespace, ControlPlaneNamespace, infraNS}
+	var namespaces []string
+	for _, ns := range []string{CoreNamespace, bNS, cpNS, infraNS} {
+		if !slices.Contains(namespaces, ns) {
+			namespaces = append(namespaces, ns)
+		}
+	}
 	for _, d := range o.Extra {
 		if d.Kind == "" || d.Name == "" || d.Namespace == "" || d.Version == "" {
 			return nil, fmt.Errorf("klotho: provider dependency %+v needs kind, name, namespace and version", d)
@@ -242,16 +320,6 @@ func ProviderObjects(o CAPIOptions, redact bool) ([]*unstructured.Unstructured, 
 		}})
 	}
 
-	fetch := func(file string) map[string]any {
-		if o.FetchURL == "" {
-			return nil
-		}
-		base := o.FetchURL
-		if !strings.HasSuffix(base, "/") {
-			base += "/"
-		}
-		return map[string]any{"url": base + file}
-	}
 	provider := func(kind, ns, name, version string, fetchConfig map[string]any) *unstructured.Unstructured {
 		// The management stack runs on the bootstrap node, which kubeadm
 		// taints as a control plane; a provider whose own manifest lacks
@@ -304,7 +372,7 @@ func ProviderObjects(o CAPIOptions, redact bool) ([]*unstructured.Unstructured, 
 	}
 
 	core := provider(KindCoreProvider, CoreNamespace, CoreProviderName, o.Version,
-		embedFetch(CoreProviderName, CoreProviderType, o.Version, CoreNamespace, o.CoreComponentsData, o.CAPIMetadata, fetch(CoreComponents)))
+		embedFetch(CoreProviderName, CoreProviderType, o.Version, CoreNamespace, o.CoreComponentsData, o.CAPIMetadata, o.fetch(CoreComponents)))
 	if len(o.FeatureGates) > 0 {
 		gates := map[string]any{}
 		for k, v := range o.FeatureGates {
@@ -314,10 +382,10 @@ func ProviderObjects(o CAPIOptions, redact bool) ([]*unstructured.Unstructured, 
 	}
 	objs = append(objs,
 		core,
-		provider(KindBootstrapProvider, BootstrapNamespace, KubeadmProviderName, o.Version,
-			embedFetch(KubeadmProviderName, BootstrapProviderType, o.Version, BootstrapNamespace, o.BootstrapComponentsData, o.CAPIMetadata, fetch(BootstrapComponents))),
-		provider(KindControlPlaneProvider, ControlPlaneNamespace, KubeadmProviderName, o.Version,
-			embedFetch(KubeadmProviderName, ControlPlaneProviderType, o.Version, ControlPlaneNamespace, o.ControlPlaneComponentsData, o.CAPIMetadata, fetch(ControlPlaneComponents))),
+		provider(KindBootstrapProvider, bNS, bName, bVersion,
+			embedFetch(bName, BootstrapProviderType, bVersion, bNS, o.BootstrapComponentsData, o.CAPIMetadata, bFetch)),
+		provider(KindControlPlaneProvider, cpNS, cpName, cpVersion,
+			embedFetch(cpName, ControlPlaneProviderType, cpVersion, cpNS, o.ControlPlaneComponentsData, o.CAPIMetadata, cpFetch)),
 	)
 	var infraURLFetch map[string]any
 	if o.InfraFetchURL != "" {

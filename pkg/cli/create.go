@@ -17,7 +17,7 @@ import (
 	"github.com/klotho-k8s/klotho/pkg/config"
 	"github.com/klotho-k8s/klotho/pkg/credential"
 	"github.com/klotho-k8s/klotho/pkg/generate"
-	"github.com/klotho-k8s/klotho/provider/controlplane/kubeadm"
+	"github.com/klotho-k8s/klotho/provider/controlplane/k0s"
 )
 
 func newCreateCommand() *cli.Command {
@@ -35,7 +35,7 @@ func newCreateCommand() *cli.Command {
 			&cli.StringFlag{
 				Name:    "control-plane",
 				Aliases: []string{"c"},
-				Usage:   "control plane provider (kubeadm)",
+				Usage:   "control plane provider (kubeadm, k0s)",
 				Value:   cpKubeadm,
 			},
 			&cli.StringFlag{
@@ -116,9 +116,10 @@ func runCreate(ctx context.Context, c *cli.Command) error {
 	if provider != providerProxmox && provider != providerDocker && provider != providerAWS && provider != providerLinode && provider != providerGCP && provider != providerAzure && provider != providerHyperv && provider != providerLibvirt {
 		return fmt.Errorf("create: infrastructure provider %q: %w (available: %s, %s, %s, %s, %s, %s, %s, %s)", provider, ErrNotImplemented, providerProxmox, providerDocker, providerAWS, providerLinode, providerGCP, providerAzure, providerHyperv, providerLibvirt)
 	}
-	if cp != cpKubeadm {
-		return fmt.Errorf("create: control plane provider %q: %w (available: %s)", cp, ErrNotImplemented, cpKubeadm)
+	if cp != cpKubeadm && cp != cpK0s {
+		return fmt.Errorf("create: control plane provider %q: %w (available: %s, %s)", cp, ErrNotImplemented, cpKubeadm, cpK0s)
 	}
+	flavor := flavorFor(c.String("flavor"), cp)
 	vars, err := parseVars(c.StringSlice("var"))
 	if err != nil {
 		return err
@@ -143,7 +144,7 @@ func runCreate(ctx context.Context, c *cli.Command) error {
 	if kubeVersion == "" {
 		kubeVersion = firstNonEmpty(vars[generate.VarKubernetesVersion], a.cfg.Variables[generate.VarKubernetesVersion])
 	}
-	deps, err := a.withProviders(provider, cp, kubeadm.Options{KubernetesVersion: kubeVersion})
+	deps, err := a.withProviders(provider, cp, kubeVersion)
 	if err != nil {
 		return err
 	}
@@ -151,7 +152,7 @@ func runCreate(ctx context.Context, c *cli.Command) error {
 	req := klotho.CreateRequest{
 		Spec: cluster.Spec{
 			Name:      name,
-			Flavor:    c.String("flavor"),
+			Flavor:    flavor,
 			Variables: vars,
 		},
 		Provider:             generate.ProviderRef{Name: provider, Version: pref.Version, URL: pref.FetchURL},
@@ -164,7 +165,7 @@ func runCreate(ctx context.Context, c *cli.Command) error {
 		ServiceCIDRs:         c.StringSlice("service-cidr"),
 		DryRunDir:            c.String("dry-run"),
 		Force:                c.Bool("force"),
-		InstallKubernetes:    installKubernetes(c, a.cfg),
+		InstallKubernetes:    installKubernetes(c, a.cfg, cp),
 		InstallOptions:       a.cfg.Nodes.InstallOptions(),
 		CAPI: generate.CAPIOptions{
 			Version:              a.cfg.CAPI.Version,
@@ -191,6 +192,12 @@ func runCreate(ctx context.Context, c *cli.Command) error {
 	if provider == providerProxmox && a.cfg.Proxmox.Template.Selects() {
 		req.MachineTemplateTags = a.cfg.Proxmox.Template.Tags
 		req.MachineTemplateMatchPolicy = a.cfg.Proxmox.Template.MatchPolicy
+	}
+	// For k0s, the operator installs the k0smotron bootstrap and control-plane
+	// providers instead of the kubeadm ones (the kubeadm defaults otherwise).
+	if cp == cpK0s {
+		km := a.cfg.K0smotron
+		req.CAPI.Bootstrap, req.CAPI.ControlPlane = k0s.CAPIProviders(km.Version, km.Namespace, km.BootstrapURL, km.ControlPlaneURL)
 	}
 
 	st, err := klotho.Create(ctx, deps, req)
@@ -302,10 +309,26 @@ func fetchComponents(ctx context.Context, rawURL string) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
+// flavorFor resolves the template flavor. A k0s control plane needs the k0s
+// template; without an explicit flavor clusterctl would otherwise render the
+// kubeadm default, which has no K0sControlPlane for the operator to adopt, so
+// --control-plane k0s implies --flavor k0s.
+func flavorFor(flavor, cp string) string {
+	if flavor == "" && cp == cpK0s {
+		return cpK0s
+	}
+	return flavor
+}
+
 // installKubernetes decides whether the install-at-boot script goes into the
 // generated bundle: the --install-kubernetes flag when given (either way),
-// else nodes.installKubernetes from the configuration.
-func installKubernetes(c *cli.Command, cfg *config.Config) bool {
+// else nodes.installKubernetes from the configuration. A k0s control plane
+// installs Kubernetes itself and has no KubeadmControlPlane for the script to
+// patch, so it is always off for k0s regardless of flag or configuration.
+func installKubernetes(c *cli.Command, cfg *config.Config, cp string) bool {
+	if cp == cpK0s {
+		return false
+	}
 	if c.IsSet("install-kubernetes") {
 		return c.Bool("install-kubernetes")
 	}

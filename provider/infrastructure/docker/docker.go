@@ -48,6 +48,8 @@ import (
 	"fmt"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
 	"github.com/klotho-k8s/klotho/provider/infrastructure"
 )
 
@@ -142,6 +144,17 @@ func (p *Provider) Name() string { return ProviderName }
 // Tag returns the cluster label value every container of cluster carries. It
 // is the cluster name; Plan and Teardown filter by ClusterLabelKey=Tag.
 func Tag(cluster string) string { return cluster }
+
+// TagMachineTemplates implements klotho's MachineTemplateTagger. CAPD tracks a
+// cluster by the ClusterLabelKey label on its containers, not by a tag on the
+// MachineTemplate, and DockerMachineTemplate's strict schema has no
+// spec.template.spec.tags field (the default list klotho would add there), so
+// server-side applying it is rejected. Implementing this interface replaces
+// that default with a no-op: nothing is written to the DockerMachineTemplates,
+// and ownership stays on the containers' label.
+func (p *Provider) TagMachineTemplates(objs []*unstructured.Unstructured, tag string) error {
+	return nil
+}
 
 // clusterLabels returns the label selector for every container of cluster.
 func clusterLabels(cluster string) map[string]string {

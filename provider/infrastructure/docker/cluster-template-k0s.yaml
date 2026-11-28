@@ -1,0 +1,143 @@
+# klotho flat Cluster API Docker (CAPD) cluster template, k0s control plane.
+#
+# Same flat shape as cluster-template.yaml (every object present so klotho's
+# adopt/pivot model can read the control plane's infrastructure MachineTemplate
+# and patch the DockerCluster endpoint), but the control plane and worker
+# bootstrap are k0smotron's K0sControlPlane / K0sWorkerConfigTemplate instead of
+# the kubeadm equivalents.
+#
+# The K0sControlPlane uses Kine storage so a single-node control plane is
+# deterministic and klotho's adoption annotation (the k0sConfigSpec as JSON) has
+# no per-machine etcd member name injected. --enable-worker --no-taints make the
+# control plane node schedulable and untainted, so the management stack
+# (cert-manager, the Cluster API operator and the providers) runs on it with no
+# workers. k0s ships its own CNI (kube-router), so no separate CNI is installed.
+#
+# CAPD is for local development and testing only, never production.
+#
+# klotho fills CLUSTER_NAME, NAMESPACE, KUBERNETES_VERSION,
+# CONTROL_PLANE_MACHINE_COUNT and WORKER_MACHINE_COUNT. The control plane
+# endpoint is supplied by klotho's Prepare (the "<cluster>-lb" haproxy container)
+# and patched onto the DockerCluster.
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: "${CLUSTER_NAME}"
+  namespace: "${NAMESPACE}"
+spec:
+  clusterNetwork:
+    services:
+      cidrBlocks: ${SERVICE_CIDR:=["10.128.0.0/12"]}
+    pods:
+      cidrBlocks: ${POD_CIDR:=["192.168.0.0/16"]}
+    serviceDomain: ${SERVICE_DOMAIN:="cluster.local"}
+  controlPlaneRef:
+    apiGroup: controlplane.cluster.x-k8s.io
+    kind: K0sControlPlane
+    name: "${CLUSTER_NAME}-control-plane"
+  infrastructureRef:
+    apiGroup: infrastructure.cluster.x-k8s.io
+    kind: DockerCluster
+    name: "${CLUSTER_NAME}"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: DockerCluster
+metadata:
+  name: "${CLUSTER_NAME}"
+  namespace: "${NAMESPACE}"
+spec: {}
+---
+apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+kind: K0sControlPlane
+metadata:
+  name: "${CLUSTER_NAME}-control-plane"
+  namespace: "${NAMESPACE}"
+spec:
+  replicas: ${CONTROL_PLANE_MACHINE_COUNT}
+  version: "${KUBERNETES_VERSION}+k0s.0"
+  updateStrategy: Recreate
+  k0sConfigSpec:
+    # Container-node (CAPD) args: --enable-worker --no-taints make the single
+    # control plane schedulable and untainted for the management stack;
+    # --ignore-pre-flight-checks skips k0s sysinfo (the eBPF device-filter probe
+    # fails in a rootless container); the kubelet feature gate
+    # KubeletInUserNamespace lets the kubelet run inside a user-namespaced
+    # container where writing host sysctls (vm/overcommit_memory, kernel/panic)
+    # is denied, exactly as klotho's kubeadm CAPD template does.
+    args:
+      - --enable-worker
+      - --no-taints
+      - --ignore-pre-flight-checks
+      - "--kubelet-extra-args=--feature-gates=KubeletInUserNamespace=true --fail-swap-on=false"
+    k0s:
+      apiVersion: k0s.k0sproject.io/v1beta1
+      kind: ClusterConfig
+      metadata:
+        name: k0s
+      spec:
+        storage:
+          type: kine
+        network:
+          provider: kuberouter
+          podCIDR: 192.168.0.0/16
+          serviceCIDR: 10.128.0.0/12
+        telemetry:
+          enabled: false
+  machineTemplate:
+    spec:
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: DockerMachineTemplate
+        name: "${CLUSTER_NAME}-control-plane"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: DockerMachineTemplate
+metadata:
+  name: "${CLUSTER_NAME}-control-plane"
+  namespace: "${NAMESPACE}"
+spec:
+  template:
+    spec: {}
+---
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: MachineDeployment
+metadata:
+  name: "${CLUSTER_NAME}-md-0"
+  namespace: "${NAMESPACE}"
+spec:
+  clusterName: "${CLUSTER_NAME}"
+  replicas: ${WORKER_MACHINE_COUNT}
+  selector:
+    matchLabels: null
+  template:
+    spec:
+      clusterName: "${CLUSTER_NAME}"
+      version: "${KUBERNETES_VERSION}+k0s.0"
+      bootstrap:
+        configRef:
+          apiGroup: bootstrap.cluster.x-k8s.io
+          kind: K0sWorkerConfigTemplate
+          name: "${CLUSTER_NAME}-md-0"
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: DockerMachineTemplate
+        name: "${CLUSTER_NAME}-md-0"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: DockerMachineTemplate
+metadata:
+  name: "${CLUSTER_NAME}-md-0"
+  namespace: "${NAMESPACE}"
+spec:
+  template:
+    spec: {}
+---
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+kind: K0sWorkerConfigTemplate
+metadata:
+  name: "${CLUSTER_NAME}-md-0"
+  namespace: "${NAMESPACE}"
+spec:
+  template:
+    spec:
+      version: "${KUBERNETES_VERSION}+k0s.0"
