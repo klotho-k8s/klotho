@@ -1,0 +1,486 @@
+// Package k3s is the control plane provider for k3s-based clusters managed by
+// the Cluster API k3s control plane provider (KThreesControlPlane, from
+// k3s-io/cluster-api-k3s).
+//
+// It mints the cluster's certificate authorities and an admin kubeconfig
+// before any node exists, turns the bootstrap node into a single-node k3s
+// server with those CAs pre-seeded, installs the Cluster API operator stack
+// (the k3s bootstrap and control plane providers included) on it, seeds the
+// Secrets KThreesControlPlane expects to find, and renders the Machine and
+// KThreesConfig that let KThreesControlPlane adopt the running node in place
+// without a rollout.
+//
+// # Adoption model
+//
+// KThreesControlPlane is derived from KubeadmControlPlane and inherits its
+// machine-adoption machinery: on reconcile it adopts pre-existing control
+// plane Machines that match its selector but carry no controller owner
+// reference, and it decides whether each machine needs a rollout by comparing
+// the machine's KThreesConfig against the desired KThreesConfigSpec through a
+// template hash recorded in an annotation. klotho exploits exactly that: Adopt
+// renders a Machine labelled as a control plane member whose
+// spec.bootstrap.dataSecretName is set (so the k3s bootstrap controller
+// generates no bootstrap data and nothing is pushed to the already-running
+// node) and a Machine whose spec matches the KThreesControlPlane's, so once the
+// control plane adopts the Machine and the Cluster is unpaused it sees an
+// existing, up-to-date member and leaves it alone.
+//
+// # Source of configuration
+//
+// The node is configured from the KThreesControlPlane in the generated cluster
+// bundle, not from settings of this package. Options only fill gaps the control
+// plane object cannot express (cert-manager and operator URLs, the fallback
+// Kubernetes version, extra SSH keys and post-init commands).
+package k3s
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net"
+	"strconv"
+	"strings"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/clientcmd"
+	"sigs.k8s.io/yaml"
+
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
+	"sigs.k8s.io/cluster-api/util/certs"
+	"sigs.k8s.io/cluster-api/util/kubeconfig"
+	"sigs.k8s.io/cluster-api/util/secret"
+
+	"github.com/klotho-k8s/klotho/pkg/cluster"
+	"github.com/klotho-k8s/klotho/pkg/generate"
+	"github.com/klotho-k8s/klotho/provider/controlplane"
+)
+
+// Name is the provider's identifier, as used by --control-plane and in state.
+const Name = "k3s"
+
+// Kind is the control plane object kind this provider handles.
+const Kind = "KThreesControlPlane"
+
+// k3s Cluster API operator provider identity. The bootstrap and control-plane
+// providers of k3s-io/cluster-api-k3s are installed as two separate operator
+// providers that share the components release, each in its own namespace.
+const (
+	// BootstrapProviderName is the cluster-api-operator provider name for the
+	// k3s bootstrap provider.
+	BootstrapProviderName = "k3s"
+	// ControlPlaneProviderName is the cluster-api-operator provider name for
+	// the k3s control plane provider.
+	ControlPlaneProviderName = "k3s"
+	// BootstrapNamespace is where the k3s bootstrap provider runs.
+	BootstrapNamespace = "capi-k3s-bootstrap-system"
+	// ControlPlaneNamespace is where the k3s control plane provider runs.
+	ControlPlaneNamespace = "capi-k3s-control-plane-system"
+	// DefaultProviderVersion is the cluster-api-k3s release whose components are
+	// installed when none is configured.
+	DefaultProviderVersion = "v0.5.1"
+)
+
+// Cluster API group/version of the k3s provider CRDs. v0.5.x serves both
+// v1beta1 and v1beta2; v1beta2 is the storage version.
+const (
+	ControlPlaneGroup   = "controlplane.cluster.x-k8s.io"
+	ControlPlaneVersion = "v1beta2"
+	BootstrapGroup      = "bootstrap.cluster.x-k8s.io"
+	BootstrapVersion    = "v1beta2"
+
+	// ConfigKind is the bootstrap config kind KThreesControlPlane machines
+	// reference. klotho's adopted Machine omits the bootstrap configRef (it sets
+	// dataSecretName directly), so no KThreesConfig object is rendered; the kind
+	// is kept for templates and callers.
+	ConfigKind = "KThreesConfig"
+)
+
+// Pinned defaults, shared with the kubeadm, k0s and rke2 providers' choices so
+// a cluster can switch its control plane without changing the rest of the
+// stack.
+const (
+	// DefaultCertManagerURL is the cert-manager release the Cluster API
+	// operator's webhooks (and the k3s provider's) need.
+	DefaultCertManagerURL = "https://github.com/cert-manager/cert-manager/releases/download/v1.21.3/cert-manager.yaml"
+	// DefaultOperatorURL is the Cluster API operator release manifest.
+	DefaultOperatorURL = "https://github.com/kubernetes-sigs/cluster-api-operator/releases/download/v0.30.1/operator-components.yaml"
+	// DefaultCNIManifestURL is the Calico manifest install. k3s ships its own
+	// CNI by default (flannel), so this is used only when the control plane
+	// disables the embedded CNI.
+	DefaultCNIManifestURL = "https://raw.githubusercontent.com/projectcalico/calico/v3.33.1/manifests/calico.yaml"
+	// DefaultPodCIDR is the pod network the cluster templates declare.
+	DefaultPodCIDR = "192.168.0.0/16"
+	// DefaultServiceCIDR is the service network the cluster templates declare.
+	DefaultServiceCIDR = "10.43.0.0/16"
+	// DefaultPort is the API server port when the endpoint does not set one.
+	DefaultPort = 6443
+)
+
+// Paths on the bootstrap node.
+const (
+	// TLSDir is k3s's server PKI directory. CA files pre-seeded here are used
+	// instead of self-signed ones (cluster-api-k3s's DefaultCertificatesDir).
+	TLSDir = "/var/lib/rancher/k3s/server/tls"
+	// ConfigPath is where k3s reads its server configuration.
+	ConfigPath = "/etc/rancher/k3s/config.yaml"
+	// K3sKubeconfig is the admin kubeconfig k3s writes once the server is up.
+	K3sKubeconfig = "/etc/rancher/k3s/k3s.yaml"
+	// BinDir is where the k3s install script links kubectl.
+	BinDir = "/usr/local/bin"
+
+	ManifestsDir   = "/run/klotho/manifests"
+	InstallScript  = "/run/klotho/k3s-install.sh"
+	PostInitScript = "/run/klotho/post-init.sh"
+)
+
+// The k3s control-plane CA set (k3s-io/cluster-api-k3s pkg/secret,
+// NewCertificatesForInitialControlPlane with embedded etcd): the cluster CA the
+// control plane provider looks up by "<cluster><suffix>" and reuses when
+// present. The server and client CAs are seeded as one cluster CA so klotho's
+// own admin credential (minted from state.CA) is accepted by the API server and
+// verifies its serving certificate; the etcd server CA is distinct so the
+// control plane's etcd client matches node zero's etcd.
+const (
+	caSuffix    = "-ca"    // server-ca on the node
+	ccaSuffix   = "-cca"   // client-ca on the node
+	etcdSuffix  = "-etcd"  // etcd/server-ca on the node
+	tokenSuffix = "-token" // the k3s cluster join token
+
+	// Credential key for the etcd CA in Credentials.Extra. The server and
+	// client CAs are Credentials.CA.
+	extraEtcd = "etcd"
+
+	tlsCrtKey = "tls.crt"
+	tlsKeyKey = "tls.key"
+)
+
+// Options are this package's additions to what the KThreesControlPlane
+// specifies.
+type Options struct {
+	// KubernetesVersion is used only when the KThreesControlPlane has no
+	// spec.version. It may be a plain Kubernetes version (v1.33.4), which is
+	// suffixed with the default k3s build, or a full k3s version
+	// (v1.33.4+k3s1).
+	KubernetesVersion string
+	// PodCIDR and ServiceCIDR stand in for the Cluster's clusterNetwork.
+	PodCIDR, ServiceCIDR string
+	CertManagerURL       string
+	OperatorURL          string
+	CNIManifestURL       string
+	// SSHAuthorizedKeys are appended to root's authorized_keys.
+	SSHAuthorizedKeys []string
+	// ExtraPostCommands run at the end of the post-init script with KUBECONFIG
+	// pointing at the admin kubeconfig.
+	ExtraPostCommands []string
+	// ContainerNodes tells the provider the control plane runs inside
+	// containers (the Docker/CAPD provider), so it configures k3s for a
+	// kindest/node container.
+	ContainerNodes bool
+}
+
+// Provider is the k3s control plane provider.
+type Provider struct {
+	opts Options
+}
+
+var _ controlplane.Provider = (*Provider)(nil)
+
+// New returns a provider with defaults filled in.
+func New(opts Options) *Provider {
+	if opts.CertManagerURL == "" {
+		opts.CertManagerURL = DefaultCertManagerURL
+	}
+	if opts.OperatorURL == "" {
+		opts.OperatorURL = DefaultOperatorURL
+	}
+	if opts.CNIManifestURL == "" {
+		opts.CNIManifestURL = DefaultCNIManifestURL
+	}
+	if opts.PodCIDR == "" {
+		opts.PodCIDR = DefaultPodCIDR
+	}
+	return &Provider{opts: opts}
+}
+
+// Name implements controlplane.Provider.
+func (p *Provider) Name() string { return Name }
+
+// Kind implements controlplane.Provider.
+func (p *Provider) Kind() string { return Kind }
+
+// InfraMachineKind maps an infrastructure provider name to the kind of its
+// Cluster API infrastructure machine.
+func InfraMachineKind(provider string) string {
+	switch strings.ToLower(provider) {
+	case "":
+		return ""
+	case "proxmox":
+		return "ProxmoxMachine"
+	case "docker":
+		return "DockerMachine"
+	case "vsphere":
+		return "VSphereMachine"
+	case "aws":
+		return "AWSMachine"
+	case "azure":
+		return "AzureMachine"
+	case "gcp":
+		return "GCPMachine"
+	}
+	return strings.ToUpper(provider[:1]) + provider[1:] + "Machine"
+}
+
+// BootstrapMachineName is the name shared by the bootstrap node's Machine,
+// KThreesConfig, bootstrap data Secret and infrastructure machine.
+func BootstrapMachineName(clusterName string) string { return clusterName + "-bootstrap" }
+
+// CAPIProviders returns the Cluster API operator bootstrap and control-plane
+// provider installs for the k3s provider, for CAPIOptions.Bootstrap and
+// .ControlPlane. Each argument overrides the corresponding default when
+// non-empty: the cluster-api-k3s release version, the provider namespaces, and
+// the two components manifest URLs (otherwise derived from the release assets
+// for the version). Like cluster-api-provider-rke2, the k3s bootstrap and
+// control-plane providers run in distinct namespaces.
+func CAPIProviders(version, bootstrapNS, controlPlaneNS, bootstrapURL, controlPlaneURL string) (bootstrap, controlPlane generate.ProviderInstall) {
+	if version == "" {
+		version = DefaultProviderVersion
+	}
+	if bootstrapNS == "" {
+		bootstrapNS = BootstrapNamespace
+	}
+	if controlPlaneNS == "" {
+		controlPlaneNS = ControlPlaneNamespace
+	}
+	base := "https://github.com/k3s-io/cluster-api-k3s/releases/download/" + version + "/"
+	if bootstrapURL == "" {
+		bootstrapURL = base + "bootstrap-components.yaml"
+	}
+	if controlPlaneURL == "" {
+		controlPlaneURL = base + "control-plane-components.yaml"
+	}
+	bootstrap = generate.ProviderInstall{Name: BootstrapProviderName, Namespace: bootstrapNS, Version: version, ComponentsURL: bootstrapURL}
+	controlPlane = generate.ProviderInstall{Name: ControlPlaneProviderName, Namespace: controlPlaneNS, Version: version, ComponentsURL: controlPlaneURL}
+	return bootstrap, controlPlane
+}
+
+// Prepare implements controlplane.Provider. It generates the k3s control-plane
+// CA set (one cluster CA used for both the server and client CAs, plus a
+// distinct etcd server CA) and an admin kubeconfig for the endpoint signed by
+// the cluster CA. These are pre-seeded into k3s's PKI on node zero and into the
+// cluster.x-k8s.io/secret Secrets KThreesControlPlane looks up, so the running
+// cluster's CAs match what the control plane expects and no CA is regenerated.
+func (p *Provider) Prepare(_ context.Context, spec *cluster.Spec, ep cluster.Endpoint) (*controlplane.Credentials, error) {
+	if spec == nil || spec.Name == "" {
+		return nil, errors.New("k3s: cluster name is required")
+	}
+	if ep.Host == "" {
+		return nil, errors.New("k3s: endpoint host is required")
+	}
+	clusterCA, err := generateCA()
+	if err != nil {
+		return nil, fmt.Errorf("k3s: generating cluster CA: %w", err)
+	}
+	etcdCA, err := generateCA()
+	if err != nil {
+		return nil, fmt.Errorf("k3s: generating etcd server CA: %w", err)
+	}
+	creds := &controlplane.Credentials{
+		CA: clusterCA,
+		Extra: map[string]cluster.KeyPair{
+			extraEtcd: etcdCA,
+		},
+	}
+
+	caCert, err := certs.DecodeCertPEM(creds.CA.Cert)
+	if err != nil {
+		return nil, fmt.Errorf("k3s: decoding cluster CA: %w", err)
+	}
+	caKey, err := certs.DecodePrivateKeyPEM(creds.CA.Key)
+	if err != nil {
+		return nil, fmt.Errorf("k3s: decoding cluster CA key: %w", err)
+	}
+	cfg, err := kubeconfig.New(spec.Name, serverURL(ep), caCert, caKey)
+	if err != nil {
+		return nil, fmt.Errorf("k3s: building admin kubeconfig: %w", err)
+	}
+	creds.Kubeconfig, err = clientcmd.Write(*cfg)
+	if err != nil {
+		return nil, fmt.Errorf("k3s: serializing admin kubeconfig: %w", err)
+	}
+	return creds, nil
+}
+
+// generateCA returns a fresh self-signed CA key pair (CN=kubernetes, RSA, ten
+// year validity), the form k3s's own PKI uses.
+func generateCA() (cluster.KeyPair, error) {
+	c := &secret.Certificate{Purpose: secret.ClusterCA}
+	if err := c.Generate(); err != nil {
+		return cluster.KeyPair{}, err
+	}
+	return cluster.KeyPair{Cert: c.KeyPair.Cert, Key: c.KeyPair.Key}, nil
+}
+
+type manifest struct {
+	name string
+	body []byte
+}
+
+// caSecret builds one cluster.x-k8s.io/secret CA Secret with the tls.crt/tls.key
+// keys KThreesControlPlane reads. It carries no owner reference; the control
+// plane provider's Lookup reuses the unowned Secret when it reconciles.
+func caSecret(clusterName, ns, name string, kp cluster.KeyPair) *corev1.Secret {
+	return &corev1.Secret{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name, Namespace: ns,
+			Labels: map[string]string{clusterv1.ClusterNameLabel: clusterName},
+		},
+		Type: clusterv1.ClusterSecretType,
+		Data: map[string][]byte{tlsCrtKey: kp.Cert, tlsKeyKey: kp.Key},
+	}
+}
+
+// seedManifests renders the namespace and the Secrets KThreesControlPlane looks
+// up for the cluster: the three CA Secrets (<name>-ca, -cca, -etcd), the cluster
+// token (<name>-token, value matching node zero's config) and the admin
+// kubeconfig (<name>-kubeconfig). The control plane provider owns the token
+// secret and would generate a fresh one for an unseeded cluster, so klotho must
+// seed the token here to match node zero.
+func seedManifests(clusterName, ns string, creds *controlplane.Credentials, token string, kubeconfigData []byte) ([]manifest, error) {
+	nsObj := &corev1.Namespace{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"},
+		ObjectMeta: metav1.ObjectMeta{Name: ns},
+	}
+	body, err := marshalDocuments(nsObj)
+	if err != nil {
+		return nil, err
+	}
+	out := []manifest{{name: "00-namespace.yaml", body: body}}
+
+	cas := []struct {
+		name string
+		kp   cluster.KeyPair
+	}{
+		{clusterName + caSuffix, creds.CA},
+		{clusterName + ccaSuffix, creds.CA},
+		{clusterName + etcdSuffix, creds.Extra[extraEtcd]},
+	}
+	for _, c := range cas {
+		if len(c.kp.Cert) == 0 || len(c.kp.Key) == 0 {
+			return nil, fmt.Errorf("k3s: credentials are missing the CA for Secret %q", c.name)
+		}
+		body, err := marshalDocuments(caSecret(clusterName, ns, c.name, c.kp))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, manifest{name: c.name + ".yaml", body: body})
+	}
+
+	tokenSecret := &corev1.Secret{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: clusterName + tokenSuffix, Namespace: ns,
+			Labels: map[string]string{clusterv1.ClusterNameLabel: clusterName},
+		},
+		Type: clusterv1.ClusterSecretType,
+		Data: map[string][]byte{"value": []byte(token)},
+	}
+	body, err = marshalDocuments(tokenSecret)
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, manifest{name: clusterName + tokenSuffix + ".yaml", body: body})
+
+	kc := &corev1.Secret{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      secret.Name(clusterName, secret.Kubeconfig),
+			Namespace: ns,
+			Labels:    map[string]string{clusterv1.ClusterNameLabel: clusterName},
+		},
+		Type: clusterv1.ClusterSecretType,
+		Data: map[string][]byte{secret.KubeconfigDataName: kubeconfigData},
+	}
+	body, err = marshalDocuments(kc)
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, manifest{name: kc.Name + ".yaml", body: body})
+	return out, nil
+}
+
+// nodeCAFiles returns the CA files k3s reads from its server tls directory,
+// pre-seeded from the minted credentials so k3s uses klotho's CAs instead of
+// self-signing. The cluster CA serves as both the server and client CA; the
+// etcd server CA is distinct. k3s self-generates any etcd peer CA it needs,
+// which the control plane provider does not manage.
+func nodeCAFiles(creds *controlplane.Credentials) []controlplane.File {
+	file := func(path string, content []byte, mode string) controlplane.File {
+		return controlplane.File{Path: path, Content: content, Mode: mode, Owner: "root:root"}
+	}
+	pair := func(base string, kp cluster.KeyPair) []controlplane.File {
+		return []controlplane.File{
+			file(base+".crt", kp.Cert, "0640"),
+			file(base+".key", kp.Key, "0600"),
+		}
+	}
+	var out []controlplane.File
+	out = append(out, pair(TLSDir+"/server-ca", creds.CA)...)
+	out = append(out, pair(TLSDir+"/client-ca", creds.CA)...)
+	out = append(out, pair(TLSDir+"/etcd/server-ca", creds.Extra[extraEtcd])...)
+	return out
+}
+
+func marshalDocuments(objs ...any) ([]byte, error) {
+	var b strings.Builder
+	for _, o := range objs {
+		y, err := yaml.Marshal(o)
+		if err != nil {
+			return nil, fmt.Errorf("k3s: marshalling manifest: %w", err)
+		}
+		b.WriteString("---\n")
+		b.Write(y)
+	}
+	return []byte(b.String()), nil
+}
+
+// endpointFromKubeconfig recovers the endpoint Prepare baked into the admin
+// kubeconfig, so UserData renders the same address.
+func endpointFromKubeconfig(data []byte) (cluster.Endpoint, error) {
+	cfg, err := clientcmd.Load(data)
+	if err != nil {
+		return cluster.Endpoint{}, fmt.Errorf("k3s: parsing admin kubeconfig: %w", err)
+	}
+	for _, c := range cfg.Clusters {
+		rest, ok := strings.CutPrefix(c.Server, "https://")
+		if !ok {
+			continue
+		}
+		host, port, err := net.SplitHostPort(strings.TrimSuffix(rest, "/"))
+		if err != nil {
+			return cluster.Endpoint{}, fmt.Errorf("k3s: kubeconfig server %q: %w", c.Server, err)
+		}
+		n, err := strconv.Atoi(port)
+		if err != nil {
+			return cluster.Endpoint{}, fmt.Errorf("k3s: kubeconfig server %q: %w", c.Server, err)
+		}
+		return cluster.Endpoint{Host: host, Port: n}, nil
+	}
+	return cluster.Endpoint{}, errors.New("k3s: admin kubeconfig has no https server")
+}
+
+func serverURL(ep cluster.Endpoint) string {
+	port := ep.Port
+	if port == 0 {
+		port = DefaultPort
+	}
+	return "https://" + net.JoinHostPort(ep.Host, strconv.Itoa(port))
+}
+
+func namespace(spec *cluster.Spec) string {
+	if spec.Namespace == "" {
+		return "default"
+	}
+	return spec.Namespace
+}

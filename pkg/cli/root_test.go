@@ -363,7 +363,7 @@ func TestCreateRejectsUnknownProviders(t *testing.T) {
 	if !errors.Is(r.runErr, ErrNotImplemented) {
 		t.Fatalf("provider: %v", r.runErr)
 	}
-	r = run(t, "", "create", "demo", "--provider", "proxmox", "--control-plane", "k3s")
+	r = run(t, "", "create", "demo", "--provider", "proxmox", "--control-plane", "talos")
 	if !errors.Is(r.runErr, ErrNotImplemented) {
 		t.Fatalf("control plane: %v", r.runErr)
 	}
@@ -556,9 +556,11 @@ func TestFlavorFor(t *testing.T) {
 	}{
 		"explicit flavor kept for k0s":     {"custom", cpK0s, "custom"},
 		"explicit flavor kept for rke2":    {"custom", cpRKE2, "custom"},
+		"explicit flavor kept for k3s":     {"custom", cpK3s, "custom"},
 		"explicit flavor kept for kubeadm": {"custom", cpKubeadm, "custom"},
 		"k0s implies k0s flavor":           {"", cpK0s, cpK0s},
 		"rke2 implies rke2 flavor":         {"", cpRKE2, cpRKE2},
+		"k3s implies k3s flavor":           {"", cpK3s, cpK3s},
 		"kubeadm keeps provider default":   {"", cpKubeadm, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -584,6 +586,8 @@ func TestInstallKubernetesFlagWinsOverConfig(t *testing.T) {
 		"k0s off without the flag":  {nil, cpK0s, true, false},
 		"rke2 forces off":           {[]string{"--install-kubernetes"}, cpRKE2, true, false},
 		"rke2 off without the flag": {nil, cpRKE2, true, false},
+		"k3s forces off":            {[]string{"--install-kubernetes"}, cpK3s, true, false},
+		"k3s off without the flag":  {nil, cpK3s, true, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			var got bool
