@@ -359,7 +359,7 @@ func TestDeleteReservationWithoutProvider(t *testing.T) {
 
 func TestCreateRejectsUnknownProviders(t *testing.T) {
 	isolate(t)
-	r := run(t, "", "create", "demo", "--provider", "openstack")
+	r := run(t, "", "create", "demo", "--provider", "nope")
 	if !errors.Is(r.runErr, ErrNotImplemented) {
 		t.Fatalf("provider: %v", r.runErr)
 	}
@@ -400,6 +400,22 @@ func TestCreateAdmitsGCPButNeedsProject(t *testing.T) {
 	}
 	if r.runErr == nil || !strings.Contains(r.runErr.Error(), "project") {
 		t.Fatalf("want a missing-project error, got %v", r.runErr)
+	}
+}
+
+func TestCreateAdmitsOpenStackButNeedsCloud(t *testing.T) {
+	isolate(t)
+	t.Setenv("OS_CLOUD", "")
+	run(t, "", "init")
+	// openstack is a known provider (it passes the create guard), but with no
+	// openstack.cloud configured the provider cannot be built, so the error is
+	// about the cloud, not ErrNotImplemented.
+	r := run(t, "", "create", "demo", "--provider", "openstack")
+	if errors.Is(r.runErr, ErrNotImplemented) {
+		t.Fatalf("openstack should be an admitted provider, got %v", r.runErr)
+	}
+	if r.runErr == nil || !strings.Contains(r.runErr.Error(), "cloud") {
+		t.Fatalf("want a missing-cloud error, got %v", r.runErr)
 	}
 }
 

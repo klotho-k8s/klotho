@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -35,6 +36,7 @@ import (
 	hypervprovider "github.com/klotho-k8s/klotho/provider/infrastructure/hyperv"
 	libvirtprovider "github.com/klotho-k8s/klotho/provider/infrastructure/libvirt"
 	linodeprovider "github.com/klotho-k8s/klotho/provider/infrastructure/linode"
+	openstackprovider "github.com/klotho-k8s/klotho/provider/infrastructure/openstack"
 	proxmoxprovider "github.com/klotho-k8s/klotho/provider/infrastructure/proxmox"
 	vsphereprovider "github.com/klotho-k8s/klotho/provider/infrastructure/vsphere"
 	vzprovider "github.com/klotho-k8s/klotho/provider/infrastructure/vz"
@@ -44,22 +46,23 @@ import (
 
 // Provider names the CLI accepts.
 const (
-	providerProxmox = "proxmox"
-	providerAWS     = "aws"
-	providerLinode  = "linode"
-	providerGCP     = "gcp"
-	providerHetzner = "hetzner"
-	providerDO      = "digitalocean"
-	providerAzure   = "azure"
-	providerDocker  = "docker"
-	providerHyperv  = "hyperv"
-	providerLibvirt = "libvirt"
-	providerVZ      = "vz"
-	providerVSphere = "vsphere"
-	cpKubeadm       = "kubeadm"
-	cpK0s           = "k0s"
-	cpRKE2          = "rke2"
-	cpK3s           = "k3s"
+	providerProxmox   = "proxmox"
+	providerAWS       = "aws"
+	providerLinode    = "linode"
+	providerGCP       = "gcp"
+	providerHetzner   = "hetzner"
+	providerDO        = "digitalocean"
+	providerVSphere   = "vsphere"
+	providerOpenStack = "openstack"
+	providerAzure     = "azure"
+	providerDocker    = "docker"
+	providerHyperv    = "hyperv"
+	providerLibvirt   = "libvirt"
+	providerVZ        = "vz"
+	cpKubeadm         = "kubeadm"
+	cpK0s             = "k0s"
+	cpRKE2            = "rke2"
+	cpK3s             = "k3s"
 )
 
 // app is what every command builds first: configuration, codec, store,
@@ -467,6 +470,36 @@ func (a *app) infra(provider string) (infrastructure.Provider, error) {
 			return nil, err
 		}
 		return doInfra{doprovider.New(client, dc)}, nil
+	case providerOpenStack:
+		o := a.cfg.OpenStack
+		if o.Cloud == "" {
+			return nil, fmt.Errorf("openstack provider: cloud is required (set openstack.cloud or OS_CLOUD)")
+		}
+		cloudsYAML, err := a.openStackCloudsYAML()
+		if err != nil {
+			return nil, err
+		}
+		oc := openstackprovider.Config{
+			Cloud:                o.Cloud,
+			CloudsYAML:           o.CloudsYAML,
+			CloudsYAMLData:       cloudsYAML,
+			Region:               o.Region,
+			Network:              o.Network,
+			Subnet:               o.Subnet,
+			ExternalNetwork:      o.ExternalNetwork,
+			Flavor:               o.Flavor,
+			Image:                o.Image,
+			SSHKeyName:           o.SSHKeyName,
+			SecurityGroups:       o.SecurityGroups,
+			AvailabilityZone:     o.AvailabilityZone,
+			ControlPlaneEndpoint: o.ControlPlaneEndpoint,
+			Port:                 o.Port,
+		}
+		client, err := openstackprovider.NewClient(context.Background(), o.Cloud, o.CloudsYAML, o.Region)
+		if err != nil {
+			return nil, err
+		}
+		return openstackInfra{openstackprovider.New(client, oc)}, nil
 	case providerAzure:
 		az := a.cfg.Azure
 		ac := azureprovider.Config{
@@ -569,7 +602,7 @@ func (a *app) infra(provider string) (infrastructure.Provider, error) {
 			SSHAuthorizedKey: v.SSHAuthorizedKey,
 		})}, nil
 	default:
-		return nil, fmt.Errorf("infrastructure provider %q: %w (available: %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", provider, ErrNotImplemented, providerProxmox, providerDocker, providerAWS, providerLinode, providerGCP, providerHetzner, providerDO, providerAzure, providerHyperv, providerLibvirt, providerVZ, providerVSphere)
+		return nil, fmt.Errorf("infrastructure provider %q: %w (available: %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", provider, ErrNotImplemented, providerProxmox, providerDocker, providerAWS, providerLinode, providerGCP, providerHetzner, providerDO, providerAzure, providerHyperv, providerLibvirt, providerVZ, providerVSphere, providerOpenStack)
 	}
 }
 
@@ -584,6 +617,30 @@ func (a *app) gcpCredentials() ([]byte, error) {
 		return nil, fmt.Errorf("gcp.credentialsFile: %w", err)
 	}
 	return b, nil
+}
+
+// openStackCloudsYAML reads the clouds.yaml whose contents are handed, base64-
+// encoded, to the in-cluster CAPO controller as a per-cluster credential Secret.
+// It reads the configured path, else the standard OpenStack locations. It is not
+// an error to find none here (the host-side client may still authenticate from
+// the environment); the generated Secret is then empty and the live run fails at
+// the controller, which is clearer than failing create for a host that has the
+// credential in its environment.
+func (a *app) openStackCloudsYAML() ([]byte, error) {
+	candidates := []string{a.cfg.OpenStack.CloudsYAML, os.Getenv("OS_CLIENT_CONFIG_FILE"), "clouds.yaml"}
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates, filepath.Join(home, ".config", "openstack", "clouds.yaml"))
+	}
+	candidates = append(candidates, filepath.Join("/etc", "openstack", "clouds.yaml"))
+	for _, path := range candidates {
+		if path == "" {
+			continue
+		}
+		if b, err := os.ReadFile(path); err == nil && len(b) > 0 {
+			return b, nil
+		}
+	}
+	return nil, nil
 }
 
 // providerSecretData is what the infrastructure provider's controller needs
@@ -748,6 +805,11 @@ type doInfra struct{ *doprovider.Provider }
 
 func (doInfra) Tag(cluster string) string { return doprovider.Tag(cluster) }
 
+// openstackInfra adds the provider's tag convention to the OpenStack provider.
+type openstackInfra struct{ *openstackprovider.Provider }
+
+func (openstackInfra) Tag(cluster string) string { return openstackprovider.Tag(cluster) }
+
 // azureInfra adds the provider's tag convention to the Azure provider.
 type azureInfra struct{ *azureprovider.Provider }
 
@@ -814,6 +876,7 @@ var (
 	_ klotho.Tagger = gcpInfra{}
 	_ klotho.Tagger = hetznerInfra{}
 	_ klotho.Tagger = doInfra{}
+	_ klotho.Tagger = openstackInfra{}
 	_ klotho.Tagger = azureInfra{}
 	_ klotho.Tagger = hypervInfra{}
 	_ klotho.Tagger = libvirtInfra{}
@@ -842,6 +905,7 @@ var (
 	_ infrastructure.Provider      = gcpInfra{}
 	_ infrastructure.Provider      = hetznerInfra{}
 	_ infrastructure.Provider      = doInfra{}
+	_ infrastructure.Provider      = openstackInfra{}
 	_ infrastructure.Provider      = azureInfra{}
 	_ infrastructure.Provider      = hypervInfra{}
 	_ infrastructure.Provider      = libvirtInfra{}

@@ -31,7 +31,7 @@ func newCreateCommand() *cli.Command {
 			&cli.StringFlag{
 				Name:     "provider",
 				Aliases:  []string{"p"},
-				Usage:    "infrastructure provider (proxmox, docker, aws, linode, gcp, hetzner, digitalocean, azure, hyperv, libvirt, vz, vsphere)",
+				Usage:    "infrastructure provider (proxmox, docker, aws, linode, gcp, hetzner, digitalocean, azure, hyperv, libvirt, vz, vsphere, openstack)",
 				Required: true,
 			},
 			&cli.StringFlag{
@@ -135,8 +135,8 @@ func runCreate(ctx context.Context, c *cli.Command) error {
 		return err
 	}
 	provider, cp := c.String("provider"), c.String("control-plane")
-	if provider != providerProxmox && provider != providerDocker && provider != providerAWS && provider != providerLinode && provider != providerGCP && provider != providerHetzner && provider != providerDO && provider != providerAzure && provider != providerHyperv && provider != providerLibvirt && provider != providerVZ && provider != providerVSphere {
-		return fmt.Errorf("create: infrastructure provider %q: %w (available: %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", provider, ErrNotImplemented, providerProxmox, providerDocker, providerAWS, providerLinode, providerGCP, providerHetzner, providerDO, providerAzure, providerHyperv, providerLibvirt, providerVZ, providerVSphere)
+	if provider != providerProxmox && provider != providerDocker && provider != providerAWS && provider != providerLinode && provider != providerGCP && provider != providerHetzner && provider != providerDO && provider != providerAzure && provider != providerHyperv && provider != providerLibvirt && provider != providerVZ && provider != providerVSphere && provider != providerOpenStack {
+		return fmt.Errorf("create: infrastructure provider %q: %w (available: %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", provider, ErrNotImplemented, providerProxmox, providerDocker, providerAWS, providerLinode, providerGCP, providerHetzner, providerDO, providerAzure, providerHyperv, providerLibvirt, providerVZ, providerVSphere, providerOpenStack)
 	}
 	if cp != cpKubeadm && cp != cpK0s && cp != cpRKE2 && cp != cpK3s {
 		return fmt.Errorf("create: control plane provider %q: %w (available: %s, %s, %s, %s)", cp, ErrNotImplemented, cpKubeadm, cpK0s, cpRKE2, cpK3s)

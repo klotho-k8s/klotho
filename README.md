@@ -19,8 +19,8 @@ the cluster to live its own life.
 ## Supported infrastructure providers
 
 klotho speaks Cluster API, so it runs wherever Cluster API does — from your
-homelab hypervisor to the big clouds. Ten providers working today on one
-adapter contract, with vSphere and OpenStack next.
+homelab hypervisor to the big clouds. A growing set of providers works today on
+one adapter contract.
 
 | Provider | | Status | Live-tested |
 | --- | --- | --- | --- |
@@ -32,6 +32,7 @@ adapter contract, with vSphere and OpenStack next.
 | **Azure** | CAPZ | ✅ Working | help wanted |
 | **Linode** | CAPL | ✅ Working | help wanted |
 | **Hetzner** | CAPH | ✅ Working | help wanted |
+| **OpenStack** | CAPO | ✅ Working | help wanted |
 | **Hyper-V** | CAPHV | ✅ Working | ✓ Windows host |
 | **libvirt / KVM** | CAPLV | ✅ Working | ✓ WSL2 / nested KVM |
 | **Apple `vz`** | CAPVZ | 🧪 Adapter ready | awaiting Mac run |

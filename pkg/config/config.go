@@ -123,6 +123,15 @@ const (
 	// ProviderDO is the digitalocean infrastructure provider's name, as
 	// clusterctl and --provider know it.
 	ProviderDO = "digitalocean"
+	// DefaultOpenStackVersion is the Cluster API Provider OpenStack (CAPO) release
+	// installed for the openstack provider. v0.15.x is the first line serving the
+	// infrastructure.cluster.x-k8s.io/v1beta2 API the flat template is authored in
+	// (storage version), with v1beta1 still served via conversion webhooks. VERIFY
+	// against a live run.
+	DefaultOpenStackVersion = "v0.15.2"
+	// ProviderOpenStack is the openstack infrastructure provider's name, as
+	// clusterctl and --provider know it.
+	ProviderOpenStack = "openstack"
 	// ProviderAzure is the azure infrastructure provider's name, as clusterctl
 	// and --provider know it.
 	ProviderAzure = "azure"
@@ -219,6 +228,7 @@ type Config struct {
 	AWS               AWS          `json:"aws,omitempty"`
 	Linode            Linode       `json:"linode,omitempty"`
 	GCP               GCP          `json:"gcp,omitempty"`
+	OpenStack         OpenStack    `json:"openstack,omitempty"`
 	Hetzner           Hetzner      `json:"hetzner,omitempty"`
 	DigitalOcean      DigitalOcean `json:"digitalocean,omitempty"`
 	Azure             Azure        `json:"azure,omitempty"`
@@ -475,6 +485,54 @@ type DigitalOcean struct {
 	// ControlPlaneEndpoint is the API server host. Empty means klotho creates (or
 	// reuses, see LoadBalancerID) a load balancer and uses its IP. A value here is
 	// used as-is (a DNS name you point at the load balancer).
+	ControlPlaneEndpoint string `json:"controlPlaneEndpoint,omitempty"`
+	// Port is the API server port; zero means 6443.
+	Port int `json:"port,omitempty"`
+}
+
+// OpenStack holds the OpenStack connection and placement settings for the
+// openstack (CAPO) provider. Credentials live in a clouds.yaml (never inline in
+// this config); its contents are handed, base64-encoded, to the in-cluster CAPO
+// controller as a per-cluster credential Secret.
+type OpenStack struct {
+	// Cloud is the entry in clouds.yaml to authenticate with (also the cloudName
+	// the in-cluster controller's identityRef selects). Required. Read from OS_CLOUD
+	// when unset.
+	Cloud string `json:"cloud,omitempty"`
+	// CloudsYAML is an optional path to a clouds.yaml. Empty uses the standard
+	// OpenStack locations (OS_CLIENT_CONFIG_FILE, ./clouds.yaml, ~/.config/openstack,
+	// /etc/openstack).
+	CloudsYAML string `json:"cloudsYaml,omitempty"`
+	// Region overrides the clouds.yaml region when selecting service endpoints.
+	Region string `json:"region,omitempty"`
+	// Network is the name of the existing Neutron network node zero joins; the
+	// cluster template references the same network so CAPO's machines land beside
+	// it. Required.
+	Network string `json:"network,omitempty"`
+	// Subnet is the name of the subnet within Network; empty lets CAPO pick it.
+	Subnet string `json:"subnet,omitempty"`
+	// ExternalNetwork is the name of the external (public) network a control plane
+	// floating IP is allocated from when ControlPlaneEndpoint is empty. Required.
+	ExternalNetwork string `json:"externalNetwork,omitempty"`
+	// Flavor is the Nova flavor name for the bootstrap server and the template's
+	// machines. Required.
+	Flavor string `json:"flavor,omitempty"`
+	// Image is the Glance image name the bootstrap server boots from. Required; a
+	// plain cloud image needs install-at-boot.
+	Image string `json:"image,omitempty"`
+	// SSHKeyName is an existing Nova keypair installed on the bootstrap server, so
+	// a failed bootstrap can be diagnosed. Optional but strongly recommended.
+	SSHKeyName string `json:"sshKeyName,omitempty"`
+	// SecurityGroups are existing security group names applied to the bootstrap
+	// server. Optional.
+	SecurityGroups []string `json:"securityGroups,omitempty"`
+	// AvailabilityZone places the bootstrap server. Optional.
+	AvailabilityZone string `json:"availabilityZone,omitempty"`
+	// ControlPlaneEndpoint is the API server host. Empty means klotho allocates a
+	// Neutron floating IP from ExternalNetwork and associates it with node zero
+	// (the cheapest endpoint, no Octavia load balancer). A value here (an existing
+	// floating IP pointed at node zero, an Octavia VIP, or a DNS name) is used
+	// as-is and no floating IP is allocated.
 	ControlPlaneEndpoint string `json:"controlPlaneEndpoint,omitempty"`
 	// Port is the API server port; zero means 6443.
 	Port int `json:"port,omitempty"`
@@ -1513,6 +1571,13 @@ func (c *Config) applyEnv() error {
 			c.GCP.CredentialsFile = v
 		}
 	}
+	if c.OpenStack.Cloud == "" {
+		// OS_CLOUD is the standard OpenStack environment selector for a clouds.yaml
+		// entry.
+		if v, ok := os.LookupEnv("OS_CLOUD"); ok && v != "" {
+			c.OpenStack.Cloud = v
+		}
+	}
 	if v, ok := os.LookupEnv(EnvAzureClientSecret); ok && v != "" {
 		c.Azure.ClientSecret = v
 	}
@@ -1589,6 +1654,12 @@ func (c *Config) applyDefaults() {
 		do.Version = DefaultDOVersion
 	}
 	c.Providers[ProviderDO] = do
+	openstack := c.Providers[ProviderOpenStack]
+	if openstack.Version == "" {
+		openstack.Version = DefaultOpenStackVersion
+	}
+	c.Providers[ProviderOpenStack] = openstack
+	c.OpenStack.CloudsYAML = Expand(c.OpenStack.CloudsYAML)
 	azure := c.Providers[ProviderAzure]
 	if azure.Version == "" {
 		azure.Version = DefaultAzureVersion
