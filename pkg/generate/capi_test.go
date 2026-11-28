@@ -33,7 +33,8 @@ func TestProviderObjectsFetchURL(t *testing.T) {
 		"imageUrl: ghcr.io/me/cluster-api-provider-proxmox:v0.9.2-me.1",
 		"name: manager",
 		"key: node-role.kubernetes.io/control-plane",
-		"nodeSelector:",
+		"affinity:",
+		"operator: Exists",
 	} {
 		if !strings.Contains(string(y), want) {
 			t.Errorf("missing %q in\n%s", want, y)

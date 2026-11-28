@@ -175,6 +175,10 @@ type Config struct {
 	// K0smotron configures the k0smotron bootstrap and control-plane providers
 	// installed for --control-plane k0s. Empty fields use built-in defaults.
 	K0smotron K0smotron `json:"k0smotron,omitempty"`
+	// RKE2 configures the cluster-api-provider-rke2 bootstrap and control-plane
+	// providers installed for --control-plane rke2. Empty fields use built-in
+	// defaults.
+	RKE2 RKE2 `json:"rke2,omitempty"`
 	// Nodes configures what every node of a generated cluster does at boot.
 	Nodes Nodes `json:"nodes,omitempty"`
 	// Providers pins infrastructure provider releases by provider name.
@@ -792,6 +796,24 @@ type K0smotron struct {
 	Version string `json:"version,omitempty"`
 	// Namespace is where the k0smotron providers run (default k0smotron).
 	Namespace string `json:"namespace,omitempty"`
+	// BootstrapURL and ControlPlaneURL override the components manifests the
+	// in-cluster operator fetches. Empty derives them from the release assets
+	// for Version.
+	BootstrapURL    string `json:"bootstrapURL,omitempty"`
+	ControlPlaneURL string `json:"controlPlaneURL,omitempty"`
+}
+
+// RKE2 pins the cluster-api-provider-rke2 bootstrap and control-plane provider
+// release the Cluster API operator installs for --control-plane rke2. Empty
+// fields fall back to the rke2 provider's built-in defaults.
+type RKE2 struct {
+	// Version is the cluster-api-provider-rke2 release, e.g. v0.27.3.
+	Version string `json:"version,omitempty"`
+	// BootstrapNamespace and ControlPlaneNamespace are where the RKE2 bootstrap
+	// and control-plane providers run (defaults rke2-bootstrap-system and
+	// rke2-control-plane-system).
+	BootstrapNamespace    string `json:"bootstrapNamespace,omitempty"`
+	ControlPlaneNamespace string `json:"controlPlaneNamespace,omitempty"`
 	// BootstrapURL and ControlPlaneURL override the components manifests the
 	// in-cluster operator fetches. Empty derives them from the release assets
 	// for Version.
