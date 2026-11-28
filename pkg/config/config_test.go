@@ -349,6 +349,41 @@ s3:
 	}
 }
 
+func TestKubernetesBackend(t *testing.T) {
+	isolate(t)
+
+	writeConfig(t, `
+backend: kubernetes
+kubernetes:
+  kubeconfig: /home/me/.kube/config
+  context: mgmt
+  namespace: klotho-state
+`)
+	c, err := Load("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.EffectiveBackend() != BackendKubernetes {
+		t.Errorf("backend = %s", c.EffectiveBackend())
+	}
+	k := c.Kubernetes
+	if k.Kubeconfig != "/home/me/.kube/config" || k.Context != "mgmt" || k.Namespace != "klotho-state" {
+		t.Errorf("kubernetes = %+v", k)
+	}
+
+	// A namespace that is not a DNS label is rejected.
+	writeConfig(t, "backend: kubernetes\nkubernetes:\n  namespace: Bad_NS\n")
+	if _, err := Load("", ""); err == nil || !strings.Contains(err.Error(), "kubernetes.namespace") {
+		t.Errorf("invalid namespace: err = %v", err)
+	}
+
+	// An empty namespace is allowed; the backend defaults it.
+	writeConfig(t, "backend: kubernetes\n")
+	if _, err := Load("", ""); err != nil {
+		t.Errorf("default namespace rejected: %v", err)
+	}
+}
+
 func TestPayloadS3(t *testing.T) {
 	isolate(t)
 

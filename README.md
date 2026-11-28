@@ -213,6 +213,13 @@ the code:
 
 - `provider/backend/proxmox/README.md`: why cluster state is kept in the
   comment of an empty Proxmox resource pool, what was rejected, and the limits.
+- `provider/backend/s3/README.md`: the `backend: s3` object store (AWS S3,
+  MinIO, Ceph RGW, R2), its atomic `Reserve` via `If-None-Match`, and the
+  credential handling.
+- `provider/backend/k8ssecret/README.md`: the `backend: kubernetes` store, which
+  keeps each cluster's record in a Secret in a **separate, already-running**
+  target cluster (it cannot be the cluster being bootstrapped), with
+  `resourceVersion` optimistic-concurrency `Save`.
 - `provider/payload/host.go`: why a payload host exists, how large klotho's
   user-data actually is, which providers' user-data caps it exceeds, and how
   to measure your own. The S3 host is implemented and tested; the create
