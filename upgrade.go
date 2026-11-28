@@ -102,6 +102,10 @@ type UpgradeOptions struct {
 	// components upgrade runs first (newer controllers then manage the node
 	// rollout). See ComponentUpgrade.
 	Components ComponentUpgrade
+	// Autoscaler, when requested, installs, retunes or removes the Cluster
+	// Autoscaler add-on day-2. It is independent of the other fields and runs
+	// last (after any node or component upgrade). See AutoscalerChange.
+	Autoscaler AutoscalerChange
 	// ControlPlaneOnly upgrades only the control plane. WorkersOnly upgrades
 	// only the MachineDeployments. Both false upgrades the control plane first,
 	// then the workers. Both true is rejected.
@@ -193,8 +197,9 @@ func Upgrade(ctx context.Context, deps Deps, name string, opts UpgradeOptions) e
 	}
 	doKube := opts.KubernetesVersion != ""
 	doComponents := opts.Components.Requested()
-	if !doKube && !doComponents {
-		return errors.New("klotho: nothing to upgrade: set --kubernetes-version and/or a component flag (--capi-version, --provider-version, --operator-version, or an image flag)")
+	doAutoscaler := opts.Autoscaler.Requested()
+	if !doKube && !doComponents && !doAutoscaler {
+		return errors.New("klotho: nothing to upgrade: set --kubernetes-version and/or a component flag (--capi-version, --provider-version, --operator-version, an image flag) and/or an autoscaler flag (--autoscaler, --autoscaler-min/-max, --autoscaler-version)")
 	}
 
 	// Parse the target version up front so a bad value fails before connecting.
@@ -231,6 +236,15 @@ func Upgrade(ctx context.Context, deps Deps, name string, opts UpgradeOptions) e
 
 	if doKube {
 		if err := upgradeKubernetes(ctx, deps, cl, name, target, opts, log.With("version", "v"+target.String())); err != nil {
+			return err
+		}
+	}
+
+	// Autoscaler last: an install/retune/remove of the add-on is independent of
+	// the version bumps and stamps the worker pools as they are after any
+	// rollout.
+	if doAutoscaler {
+		if err := upgradeAutoscaler(ctx, cl, name, opts.Autoscaler, log); err != nil {
 			return err
 		}
 	}

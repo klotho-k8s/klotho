@@ -72,6 +72,26 @@ func newUpgradeCommand() *cli.Command {
 				Name:  "provider-image",
 				Usage: "day-2: fork/mirror image for the infrastructure provider controller",
 			},
+			&cli.BoolFlag{
+				Name:  "autoscaler",
+				Usage: "day-2: install/enable the Cluster Autoscaler add-on; --autoscaler=false removes it",
+			},
+			&cli.IntFlag{
+				Name:  "autoscaler-min",
+				Usage: "day-2: retune the autoscaler node-group minimum on every worker pool (patches the MachineDeployment annotation)",
+			},
+			&cli.IntFlag{
+				Name:  "autoscaler-max",
+				Usage: "day-2: retune the autoscaler node-group maximum on every worker pool",
+			},
+			&cli.StringFlag{
+				Name:  "autoscaler-version",
+				Usage: "day-2: bump the autoscaler image tag, e.g. v1.33.4",
+			},
+			&cli.StringFlag{
+				Name:  "autoscaler-image",
+				Usage: "day-2: fully override the autoscaler image (repo:tag), for a mirror or fork",
+			},
 			&cli.StringFlag{
 				Name:  "cluster",
 				Usage: "cluster to upgrade (alternative to the positional name argument)",
@@ -133,12 +153,22 @@ func newUpgradeCommand() *cli.Command {
 					ControlPlaneImage: c.String("capi-controlplane-image"),
 					ProviderImage:     c.String("provider-image"),
 				},
+				Autoscaler: klotho.AutoscalerChange{
+					Set:     c.IsSet("autoscaler"),
+					Enabled: c.Bool("autoscaler"),
+					Min:     int(c.Int("autoscaler-min")),
+					MinSet:  c.IsSet("autoscaler-min"),
+					Max:     int(c.Int("autoscaler-max")),
+					MaxSet:  c.IsSet("autoscaler-max"),
+					Version: c.String("autoscaler-version"),
+					Image:   c.String("autoscaler-image"),
+				},
 			}
 			// Validate before touching configuration or the cluster: the user must
 			// ask for at least one of a node-version upgrade or a management-plane
 			// component upgrade.
-			if opts.KubernetesVersion == "" && !opts.Components.Requested() {
-				return fmt.Errorf("upgrade: nothing to do: set --kubernetes-version and/or a component flag (--capi-version, --provider-version, --operator-version, or an image flag)")
+			if opts.KubernetesVersion == "" && !opts.Components.Requested() && !opts.Autoscaler.Requested() {
+				return fmt.Errorf("upgrade: nothing to do: set --kubernetes-version and/or a component flag (--capi-version, --provider-version, --operator-version, an image flag) and/or an autoscaler flag (--autoscaler, --autoscaler-min/-max, --autoscaler-version)")
 			}
 			a, err := newApp(c)
 			if err != nil {
@@ -169,6 +199,16 @@ func upgradeSummary(opts klotho.UpgradeOptions) string {
 	}
 	if c.OperatorVersion != "" {
 		parts = append(parts, "operator "+c.OperatorVersion)
+	}
+	if a := opts.Autoscaler; a.Requested() {
+		switch {
+		case a.Set && !a.Enabled:
+			parts = append(parts, "autoscaler removed")
+		case a.Version != "" || a.Image != "":
+			parts = append(parts, "autoscaler image")
+		default:
+			parts = append(parts, "autoscaler")
+		}
 	}
 	if len(parts) == 0 {
 		// Only image flags were given.

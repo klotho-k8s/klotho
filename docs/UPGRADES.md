@@ -206,6 +206,40 @@ the control-plane and worker rollout. A components-only or a node-only
 invocation runs just that part; an invocation with neither is rejected
 (`nothing to do`).
 
+## Managing the cluster-autoscaler add-on
+
+`klotho upgrade` also installs, retunes or removes the **Cluster Autoscaler**
+add-on day-2 — the same add-on `klotho create --autoscaler` installs at birth.
+It is provider-agnostic (it drives `MachineDeployment`s through the Cluster API
+contract) and scales the node **count** of a pool, never a node's size. See
+[docs/AUTOSCALER.md](AUTOSCALER.md) for what it is and the scale-from-zero
+caveat.
+
+| flag | effect |
+| --- | --- |
+| `--autoscaler` | install/enable the add-on; `--autoscaler=false` removes it |
+| `--autoscaler-min` | retune the node-group minimum on every worker pool |
+| `--autoscaler-max` | retune the node-group maximum on every worker pool |
+| `--autoscaler-version` | bump the autoscaler image tag, e.g. `v1.33.4` |
+| `--autoscaler-image` | fully override the image (`repo:tag`) for a mirror/fork |
+
+    klotho upgrade <cluster> --autoscaler                       # install (or update)
+    klotho upgrade <cluster> --autoscaler-min 2 --autoscaler-max 10   # retune bounds
+    klotho upgrade <cluster> --autoscaler-version v1.33.4        # bump the image
+    klotho upgrade <cluster> --autoscaler=false                  # remove
+
+Installing or updating server-side applies the add-on objects (ServiceAccount,
+the two ClusterRoles + bindings, Deployment) and patches each worker
+`MachineDeployment`'s `cluster.x-k8s.io/cluster-api-autoscaler-node-group-min-size`
+/ `-max-size` annotations. A bound you do not pass keeps the pool's current
+value; an unset image tracks the control plane's Kubernetes version. Removing
+deletes the add-on objects and strips the min/max annotations klotho stamped —
+nothing else. These changes are independent of `--kubernetes-version` and the
+component flags and run **last** in an invocation that also upgrades, so the
+pools are stamped as they are after the rollout. A cluster with no worker pool
+still installs the autoscaler (a warning is printed; it idles until a pool
+exists).
+
 ## What klotho does not do
 
 It does not build template images, it does not touch cert-manager or install the
