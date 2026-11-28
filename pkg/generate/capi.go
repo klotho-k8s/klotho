@@ -108,6 +108,19 @@ type CAPIOptions struct {
 	ControlPlaneComponentsData string
 	CAPIMetadata               string
 
+	// CoreImage, BootstrapImage and ControlPlaneImage, when set, replace the
+	// manager container image of the core, bootstrap and control plane
+	// providers. Like InfraImage, this patches spec.deployment.containers and
+	// leaves the fetched component manifests untouched: the operator keeps the
+	// image repository it knows for the provider and only follows the version
+	// tag, so components from another repository's build (a fork, or a public
+	// mirror of a private default image) need their image named here. Pointing
+	// CoreImage at a public registry is how a cluster whose default core image
+	// is private is unblocked. Empty leaves the provider's own image in place.
+	CoreImage         string
+	BootstrapImage    string
+	ControlPlaneImage string
+
 	InfraProviderName    string
 	InfraProviderVersion string
 	// InfraFetchURL, when set, is the full URL of the infrastructure
@@ -377,6 +390,7 @@ func ProviderObjects(o CAPIOptions, redact bool) ([]*unstructured.Unstructured, 
 
 	core := provider(KindCoreProvider, CoreNamespace, CoreProviderName, o.Version,
 		embedFetch(CoreProviderName, CoreProviderType, o.Version, CoreNamespace, o.CoreComponentsData, o.CAPIMetadata, o.fetch(CoreComponents)))
+	setManagerImage(core, o.CoreImage)
 	if len(o.FeatureGates) > 0 {
 		gates := map[string]any{}
 		for k, v := range o.FeatureGates {
@@ -384,24 +398,20 @@ func ProviderObjects(o CAPIOptions, redact bool) ([]*unstructured.Unstructured, 
 		}
 		core.Object["spec"].(map[string]any)["manager"] = map[string]any{"featureGates": gates}
 	}
-	objs = append(objs,
-		core,
-		provider(KindBootstrapProvider, bNS, bName, bVersion,
-			embedFetch(bName, BootstrapProviderType, bVersion, bNS, o.BootstrapComponentsData, o.CAPIMetadata, bFetch)),
-		provider(KindControlPlaneProvider, cpNS, cpName, cpVersion,
-			embedFetch(cpName, ControlPlaneProviderType, cpVersion, cpNS, o.ControlPlaneComponentsData, o.CAPIMetadata, cpFetch)),
-	)
+	bootstrap := provider(KindBootstrapProvider, bNS, bName, bVersion,
+		embedFetch(bName, BootstrapProviderType, bVersion, bNS, o.BootstrapComponentsData, o.CAPIMetadata, bFetch))
+	setManagerImage(bootstrap, o.BootstrapImage)
+	controlPlane := provider(KindControlPlaneProvider, cpNS, cpName, cpVersion,
+		embedFetch(cpName, ControlPlaneProviderType, cpVersion, cpNS, o.ControlPlaneComponentsData, o.CAPIMetadata, cpFetch))
+	setManagerImage(controlPlane, o.ControlPlaneImage)
+	objs = append(objs, core, bootstrap, controlPlane)
 	var infraURLFetch map[string]any
 	if o.InfraFetchURL != "" {
 		infraURLFetch = map[string]any{"url": o.InfraFetchURL}
 	}
 	infraFetch := embedFetch(o.InfraProviderName, InfrastructureProviderType, o.InfraProviderVersion, infraNS, o.InfraComponents, o.InfraMetadata, infraURLFetch)
 	infra := provider(KindInfrastructureProvider, infraNS, o.InfraProviderName, o.InfraProviderVersion, infraFetch)
-	if o.InfraImage != "" {
-		infra.Object["spec"].(map[string]any)["deployment"].(map[string]any)["containers"] = []any{
-			map[string]any{"name": "manager", "imageUrl": o.InfraImage},
-		}
-	}
+	setManagerImage(infra, o.InfraImage)
 	if len(o.ProviderSecretData) > 0 {
 		infra.Object["spec"].(map[string]any)["configSecret"] = map[string]any{
 			"name": o.secretName(), "namespace": infraNS,
@@ -412,6 +422,20 @@ func ProviderObjects(o CAPIOptions, redact bool) ([]*unstructured.Unstructured, 
 		objs = append(objs, provider(d.Kind, d.Namespace, d.Name, d.Version, nil))
 	}
 	return objs, nil
+}
+
+// setManagerImage patches an operator provider object's manager container
+// image, overriding the controller image without rewriting the fetched
+// component manifests (the operator keeps the image repository it knows for the
+// provider and only follows the version tag). An empty image is a no-op, so an
+// unset lever leaves the rendered object byte-identical to the default.
+func setManagerImage(u *unstructured.Unstructured, image string) {
+	if image == "" {
+		return
+	}
+	u.Object["spec"].(map[string]any)["deployment"].(map[string]any)["containers"] = []any{
+		map[string]any{"name": "manager", "imageUrl": image},
+	}
 }
 
 // componentsConfigMap builds the ConfigMap the Cluster API operator reads a

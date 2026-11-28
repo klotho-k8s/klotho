@@ -837,6 +837,28 @@ type CAPI struct {
 	OperatorURL    string          `json:"operatorURL,omitempty"`
 	CertManagerURL string          `json:"certManagerURL,omitempty"`
 	CNIManifestURL string          `json:"cniManifestURL,omitempty"`
+	// Images overrides the controller image of the core, bootstrap and control
+	// plane providers without rewriting the fetched component manifests. Empty
+	// fields change nothing.
+	Images CAPIImages `json:"images,omitempty"`
+}
+
+// CAPIImages overrides the manager container image of the Cluster API core,
+// bootstrap and control plane providers. The Cluster API operator keeps the
+// image repository it knows for a provider and only follows the version tag, so
+// an image here is how the operator is pointed at another repository's build
+// (a fork, or a public mirror) without touching the fetched components. The
+// motivating case is core: when the default core controller image lives in a
+// private registry, pointing Core at a public one (for example
+// ghcr.io/klotho-k8s/cluster-api-controller) lets the self-managed cluster pull
+// it. Empty fields leave the provider's own image untouched.
+type CAPIImages struct {
+	// Core overrides the core provider (cluster-api) manager image.
+	Core string `json:"core,omitempty"`
+	// Bootstrap overrides the bootstrap provider manager image.
+	Bootstrap string `json:"bootstrap,omitempty"`
+	// ControlPlane overrides the control plane provider manager image.
+	ControlPlane string `json:"controlPlane,omitempty"`
 }
 
 // K0smotron pins the k0smotron (k0s) bootstrap and control-plane provider
@@ -1640,7 +1662,13 @@ const Skeleton = `# klotho configuration. Every field is optional; see "klotho -
 #     # keys: set KLOTHO_S3_ACCESS_KEY_ID and KLOTHO_S3_SECRET_ACCESS_KEY,
 #     # or leave both unset to use the AWS credential chain
 # capi:
-#   version: v1.12.9
+#   version: v1.12.9        # the core, bootstrap and control plane provider line
+#   images:                 # override a controller image without rewriting components;
+#                           # the operator keeps the version tag but follows these repos
+#     core: ghcr.io/klotho-k8s/cluster-api-controller:v1.12.9  # e.g. a public mirror of a
+#                           # private default core image, so the self-managed cluster can pull it
+#     # bootstrap: ghcr.io/<owner>/cluster-api-kubeadm-bootstrap-controller:v1.12.9
+#     # controlPlane: ghcr.io/<owner>/cluster-api-kubeadm-control-plane-controller:v1.12.9
 # libvirt:
 #   uri: qemu:///system      # klotho the CLI's URI; or qemu+tcp://host/system, qemu+tls://host/system
 #   # uri: set KLOTHO_LIBVIRT_URI instead of storing it here

@@ -219,6 +219,102 @@ func TestProviderObjectsTolerateControlPlane(t *testing.T) {
 	}
 }
 
+// managerImage returns the imageUrl of a provider object's first deployment
+// container, and whether a manager container override is present at all.
+func managerImage(t *testing.T, u *unstructured.Unstructured) (string, bool) {
+	t.Helper()
+	containers, found, err := unstructured.NestedSlice(u.Object, "spec", "deployment", "containers")
+	if err != nil {
+		t.Fatalf("%s: containers: %v", u.GetKind(), err)
+	}
+	if !found || len(containers) == 0 {
+		return "", false
+	}
+	c := containers[0].(map[string]any)
+	if c["name"] != "manager" {
+		t.Fatalf("%s: first container is %v, want name manager", u.GetKind(), c["name"])
+	}
+	img, _ := c["imageUrl"].(string)
+	return img, true
+}
+
+// TestProviderObjectsImageLevers checks that a per-component image override
+// lands as spec.deployment.containers[0].imageUrl on the matching provider CR,
+// for the core, bootstrap, control plane and infrastructure providers.
+func TestProviderObjectsImageLevers(t *testing.T) {
+	const (
+		coreImg  = "ghcr.io/klotho-k8s/cluster-api-controller:v1.12.9"
+		bootImg  = "ghcr.io/klotho-k8s/cluster-api-kubeadm-bootstrap-controller:v1.12.9"
+		cpImg    = "ghcr.io/klotho-k8s/cluster-api-kubeadm-control-plane-controller:v1.12.9"
+		infraImg = "ghcr.io/me/cluster-api-provider-proxmox:v0.9.2-me.1"
+	)
+	objs, err := ProviderObjects(CAPIOptions{
+		Version:              "v1.12.9",
+		InfraProviderName:    "proxmox",
+		InfraProviderVersion: "v0.9.2",
+		CoreImage:            coreImg,
+		BootstrapImage:       bootImg,
+		ControlPlaneImage:    cpImg,
+		InfraImage:           infraImg,
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		KindCoreProvider:           coreImg,
+		KindBootstrapProvider:      bootImg,
+		KindControlPlaneProvider:   cpImg,
+		KindInfrastructureProvider: infraImg,
+	}
+	seen := map[string]bool{}
+	for _, o := range objs {
+		exp, ok := want[o.GetKind()]
+		if !ok {
+			continue
+		}
+		seen[o.GetKind()] = true
+		img, present := managerImage(t, o)
+		if !present {
+			t.Errorf("%s: no manager image override", o.GetKind())
+			continue
+		}
+		if img != exp {
+			t.Errorf("%s: imageUrl = %q, want %q", o.GetKind(), img, exp)
+		}
+	}
+	for kind := range want {
+		if !seen[kind] {
+			t.Errorf("%s object not rendered", kind)
+		}
+	}
+}
+
+// TestProviderObjectsNoImageLevers checks that with no image levers set the
+// rendered output carries no container image override on any provider - the
+// unset path is byte-identical to the pre-feature default.
+func TestProviderObjectsNoImageLevers(t *testing.T) {
+	objs, err := ProviderObjects(CAPIOptions{
+		Version: "v1.12.9", InfraProviderName: "proxmox", InfraProviderVersion: "v0.9.2",
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range objs {
+		if !strings.HasSuffix(o.GetKind(), "Provider") {
+			continue
+		}
+		if _, present := managerImage(t, o); present {
+			t.Errorf("%s: unexpected manager image override with no levers set", o.GetKind())
+		}
+	}
+	y, _ := RenderYAML(objs)
+	for _, forbidden := range []string{"imageUrl", "containers:"} {
+		if strings.Contains(string(y), forbidden) {
+			t.Errorf("rendered output contains %q with no image levers set:\n%s", forbidden, y)
+		}
+	}
+}
+
 func TestProviderObjectsExtraDependencies(t *testing.T) {
 	o := CAPIOptions{Version: "v1.12.9", InfraProviderName: "proxmox", InfraProviderVersion: "v0.9.2",
 		Extra: []provider.Dependency{{Kind: "IPAMProvider", Name: "in-cluster", Namespace: "capi-ipam-in-cluster-system", Version: "v1.1.1"}}}
