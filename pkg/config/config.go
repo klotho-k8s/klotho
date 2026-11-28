@@ -111,6 +111,12 @@ const (
 	// API v1.12.x (DefaultCAPIVersion), and its infrastructure CRDs are
 	// infrastructure.cluster.x-k8s.io/v1beta1. VERIFY against a live run.
 	DefaultAzureVersion = "v1.23.3"
+	// DefaultOCIVersion is the Cluster API Provider for OCI (CAPOCI) release
+	// installed for the oci provider. v0.25.0 is the current release; its
+	// infrastructure CRDs are infrastructure.cluster.x-k8s.io/v1beta2 (the
+	// storage version) and it is built against Cluster API v1.13.x, so VERIFY the
+	// core v1beta2 contract compatibility against a live run.
+	DefaultOCIVersion = "v0.25.0"
 	// ProviderAWS is the aws infrastructure provider's name, as clusterctl
 	// and --provider know it.
 	ProviderAWS = "aws"
@@ -135,6 +141,9 @@ const (
 	// ProviderAzure is the azure infrastructure provider's name, as clusterctl
 	// and --provider know it.
 	ProviderAzure = "azure"
+	// ProviderOCI is the oci infrastructure provider's name, as clusterctl and
+	// --provider know it.
+	ProviderOCI = "oci"
 	// DefaultHyperVVersion is the Cluster API Hyper-V provider release klotho
 	// installs for the hyperv provider. It is a pre-release; the controller
 	// image and release manifests are produced from
@@ -232,6 +241,7 @@ type Config struct {
 	Hetzner           Hetzner      `json:"hetzner,omitempty"`
 	DigitalOcean      DigitalOcean `json:"digitalocean,omitempty"`
 	Azure             Azure        `json:"azure,omitempty"`
+	OCI               OCI          `json:"oci,omitempty"`
 	Docker            Docker       `json:"docker,omitempty"`
 	Hyperv            Hyperv       `json:"hyperv,omitempty"`
 	Libvirt           Libvirt      `json:"libvirt,omitempty"`
@@ -585,6 +595,69 @@ type Azure struct {
 	ControlPlaneEndpoint string `json:"controlPlaneEndpoint,omitempty"`
 	// Port is the API server port; zero means 6443.
 	Port int `json:"port,omitempty"`
+}
+
+// OCI holds the Oracle Cloud Infrastructure connection and placement settings
+// for the oci (CAPOCI) provider. Credentials are not stored here: klotho
+// authenticates with an OCI SDK config file (~/.oci/config) or the host's
+// instance principal, and the in-cluster CAPOCI controller authenticates with
+// its own OCIClusterIdentity / instance principal.
+type OCI struct {
+	// CompartmentID is the OCID of the compartment the cluster runs in. Required.
+	CompartmentID string `json:"compartmentId,omitempty"`
+	// Region is the OCI region identifier, e.g. "us-ashburn-1". Required.
+	Region string `json:"region,omitempty"`
+	// AvailabilityDomain is the AD the bootstrap instance is placed in, e.g.
+	// "Uocm:US-ASHBURN-AD-1". Required.
+	AvailabilityDomain string `json:"availabilityDomain,omitempty"`
+	// VCNID and SubnetID are an existing VCN and subnet the bootstrap instance
+	// joins; klotho points CAPOCI at the same ones so it adopts node zero in
+	// place instead of creating a new VCN. Required (klotho creates no network).
+	VCNID    string `json:"vcnId,omitempty"`
+	SubnetID string `json:"subnetId,omitempty"`
+	// NSGIDs are OCIDs of network security groups attached to the primary VNIC.
+	NSGIDs []string `json:"nsgIds,omitempty"`
+	// ImageID is the OCID of the boot image. Required: OCI images are
+	// region/tenancy-specific OCIDs with no sane default. Use a plain Ubuntu
+	// image (install-at-boot adds Kubernetes).
+	ImageID string `json:"imageId,omitempty"`
+	// Shape sizes the bootstrap instance (and the template's machines); empty
+	// means VM.Standard.E4.Flex. For the Always Free tier use VM.Standard.A1.Flex
+	// with an arm64 image.
+	Shape string `json:"shape,omitempty"`
+	// OCPUs and MemoryGBs size a flexible shape; zero means 2 OCPUs / 16 GB
+	// (two OCPUs clear kubeadm's two-CPU control-plane preflight). Ignored for
+	// fixed shapes.
+	OCPUs     float32 `json:"ocpus,omitempty"`
+	MemoryGBs float32 `json:"memoryGBs,omitempty"`
+	// BootVolumeGBs sizes the boot volume; zero means 50 GB (OCI's minimum).
+	BootVolumeGBs int64 `json:"bootVolumeGBs,omitempty"`
+	// AssignPublicIP gives the bootstrap instance a public IP. Unset means true;
+	// set it false only with a NAT gateway and another route to the endpoint.
+	AssignPublicIP *bool `json:"assignPublicIp,omitempty"`
+	// SSHAuthorizedKeys are public keys installed via the instance metadata, so a
+	// failed bootstrap can be diagnosed.
+	SSHAuthorizedKeys []string `json:"sshAuthorizedKeys,omitempty"`
+	// FreeformTags are extra OCI freeform tags added to the bootstrap instance.
+	FreeformTags map[string]string `json:"freeformTags,omitempty"`
+	// ResourceIdentifier is pinned into OCICluster.spec.ociResourceIdentifier and
+	// the instance's ClusterResourceIdentifier freeform tag. Empty means the
+	// cluster name, which the flat template also pins.
+	ResourceIdentifier string `json:"resourceIdentifier,omitempty"`
+	// ControlPlaneEndpoint is the API server host. Required: klotho mints the
+	// certificates before the node boots, and stock CAPOCI learns its endpoint
+	// only after provisioning a load balancer. Supply an address the control-plane
+	// LB answers on, or node zero's own reserved public IP for a single node.
+	ControlPlaneEndpoint string `json:"controlPlaneEndpoint,omitempty"`
+	// Port is the API server port; zero means 6443.
+	Port int `json:"port,omitempty"`
+	// ConfigFile is the path to an OCI SDK config file; empty means the SDK
+	// default (~/.oci/config). Profile selects a profile; empty means DEFAULT.
+	ConfigFile string `json:"configFile,omitempty"`
+	Profile    string `json:"profile,omitempty"`
+	// UseInstancePrincipal authenticates with the instance principal of the host
+	// klotho runs on instead of a config file; takes precedence over ConfigFile.
+	UseInstancePrincipal bool `json:"useInstancePrincipal,omitempty"`
 }
 
 // Docker holds the Cluster API Docker provider (CAPD) settings for local
@@ -1665,6 +1738,12 @@ func (c *Config) applyDefaults() {
 		azure.Version = DefaultAzureVersion
 	}
 	c.Providers[ProviderAzure] = azure
+	oci := c.Providers[ProviderOCI]
+	if oci.Version == "" {
+		oci.Version = DefaultOCIVersion
+	}
+	c.Providers[ProviderOCI] = oci
+	c.OCI.ConfigFile = Expand(c.OCI.ConfigFile)
 	hv := c.Providers[ProviderHyperV]
 	if hv.Version == "" {
 		hv.Version = DefaultHyperVVersion

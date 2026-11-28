@@ -126,6 +126,9 @@ func TestLoadMissingFileGivesDefaults(t *testing.T) {
 	if c.Providers[ProviderAzure].Version != DefaultAzureVersion {
 		t.Errorf("azure default version = %q, want %q", c.Providers[ProviderAzure].Version, DefaultAzureVersion)
 	}
+	if c.Providers[ProviderOCI].Version != DefaultOCIVersion {
+		t.Errorf("oci default version = %q, want %q", c.Providers[ProviderOCI].Version, DefaultOCIVersion)
+	}
 	if c.EffectiveBackend() != BackendFile {
 		t.Errorf("backend = %s", c.EffectiveBackend())
 	}

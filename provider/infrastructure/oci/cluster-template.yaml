@@ -1,0 +1,237 @@
+# klotho flat, cost-safe OCI (CAPOCI) cluster template.
+#
+# It is authored in the Cluster API v1beta2 contract (CAPI-core object
+# references use apiGroup, not apiVersion), which is what klotho's generator
+# requires. The OCI infrastructure objects are
+# infrastructure.cluster.x-k8s.io/v1beta2 (CAPOCI's storage version). klotho
+# enforces the v1beta2 contract only on the CAPI-core objects (Cluster,
+# KubeadmControlPlane, MachineDeployment, KubeadmConfigTemplate), which are all
+# v1beta2 here.
+#
+# It is deliberately simple and cheap to run:
+#   * The cluster uses an EXISTING VCN and subnet (networkSpec.vcn.skip: true
+#     with ${OCI_VCN_ID} / ${OCI_SUBNET_ID}), the same ones klotho boots node
+#     zero into. CAPOCI then creates no VCN, so it adopts node zero in place
+#     instead of stranding it in a fresh network. All gateways are skipped
+#     (CAPOCI manages nothing in the VCN); bring a public subnet with a route to
+#     an internet gateway so the node can pull images.
+#   * The API-server load balancer is NOT managed: the Cluster carries the
+#     annotation cluster.x-k8s.io/skip-apiserver-lb-management: "true" and
+#     OCICluster.spec.controlPlaneEndpoint is set to the endpoint klotho minted
+#     the certificates for (oci.controlPlaneEndpoint). So stock CAPOCI does not
+#     provision (and bill for) a Network Load Balancer and does not overwrite the
+#     endpoint. For a single node, point oci.controlPlaneEndpoint at node zero's
+#     own reserved public IP; for HA, point it at an NLB you manage.
+#   * ociResourceIdentifier is pinned to "${CLUSTER_NAME}". CAPOCI adopts the
+#     hand-booted node by display name cross-checked against the freeform tag
+#     ClusterResourceIdentifier=<ociResourceIdentifier>; klotho stamps that tag
+#     on node zero before boot, so pinning this makes adoption deterministic.
+#   * A single control plane on a flexible shape sized to clear kubeadm's
+#     two-CPU preflight (VM.Standard.E4.Flex, 2 OCPUs by default).
+#
+# klotho fills CLUSTER_NAME, NAMESPACE, KUBERNETES_VERSION,
+# CONTROL_PLANE_MACHINE_COUNT and WORKER_MACHINE_COUNT itself, patches
+# CONTROL_PLANE_ENDPOINT_IP / CONTROL_PLANE_ENDPOINT_PORT, and the OCI provider's
+# Prepare fills OCI_COMPARTMENT_ID, OCI_RESOURCE_IDENTIFIER, OCI_VCN_ID,
+# OCI_SUBNET_ID, OCI_IMAGE_ID, OCI_CONTROL_PLANE_MACHINE_TYPE, OCI_NODE_MACHINE_TYPE,
+# OCI_MACHINE_TYPE_OCPUS and OCI_MACHINE_TYPE_MEMORY_GBS. OCI_SSH_KEY is optional.
+#
+# The base image (${OCI_IMAGE_ID}) should be a plain Ubuntu image; it carries no
+# Kubernetes, so create with klotho's install-at-boot (nodes.installKubernetes /
+# --install-kubernetes). No CNI is shipped (like upstream CAPOCI's own
+# templates); apply one after the API server is up.
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: "${CLUSTER_NAME}"
+  annotations:
+    # Do not let CAPOCI manage (provision/own) the API-server load balancer.
+    # klotho supplies the control plane endpoint below, minted into the
+    # certificates before node zero boots.
+    cluster.x-k8s.io/skip-apiserver-lb-management: "true"
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks:
+      - 192.168.0.0/16
+  controlPlaneRef:
+    apiGroup: controlplane.cluster.x-k8s.io
+    kind: KubeadmControlPlane
+    name: "${CLUSTER_NAME}-control-plane"
+  infrastructureRef:
+    apiGroup: infrastructure.cluster.x-k8s.io
+    kind: OCICluster
+    name: "${CLUSTER_NAME}"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: OCICluster
+metadata:
+  name: "${CLUSTER_NAME}"
+  labels:
+    cluster.x-k8s.io/cluster-name: "${CLUSTER_NAME}"
+spec:
+  compartmentId: "${OCI_COMPARTMENT_ID}"
+  # Pinned so klotho can stamp the matching ClusterResourceIdentifier freeform
+  # tag on node zero before boot; CAPOCI adopts the node by display name + this
+  # tag. CAPOCI's webhook only auto-fills this (with a random UUID) when empty.
+  ociResourceIdentifier: "${OCI_RESOURCE_IDENTIFIER}"
+  # klotho patches spec.controlPlaneEndpoint (host/port) from the configured
+  # oci.controlPlaneEndpoint; with it set and LB management skipped (annotation
+  # above), CAPOCI neither provisions an NLB nor overwrites the endpoint.
+  controlPlaneEndpoint:
+    host: "${CONTROL_PLANE_ENDPOINT_IP}"
+    port: ${CONTROL_PLANE_ENDPOINT_PORT:=6443}
+  networkSpec:
+    # Use the existing VCN and subnet node zero was booted into; manage nothing.
+    vcn:
+      id: "${OCI_VCN_ID}"
+      skip: true
+      internetGateway:
+        skip: true
+      natGateway:
+        skip: true
+      serviceGateway:
+        skip: true
+      routeTable:
+        skip: true
+      networkSecurityGroup:
+        skip: true
+      subnets:
+      - id: "${OCI_SUBNET_ID}"
+        role: control-plane-endpoint
+        name: control-plane-endpoint
+        type: public
+        skip: true
+      - id: "${OCI_SUBNET_ID}"
+        role: control-plane
+        name: control-plane
+        type: public
+        skip: true
+      - id: "${OCI_SUBNET_ID}"
+        role: worker
+        name: worker
+        type: public
+        skip: true
+      - id: "${OCI_SUBNET_ID}"
+        role: service-lb
+        name: service-lb
+        type: public
+        skip: true
+---
+apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+kind: KubeadmControlPlane
+metadata:
+  name: "${CLUSTER_NAME}-control-plane"
+spec:
+  kubeadmConfigSpec:
+    clusterConfiguration:
+      apiServer:
+        certSANs:
+        - localhost
+        - 127.0.0.1
+    initConfiguration:
+      localAPIEndpoint:
+        bindPort: ${CONTROL_PLANE_ENDPOINT_PORT:=6443}
+      nodeRegistration:
+        kubeletExtraArgs:
+          cloud-provider: external
+          provider-id: oci://{{ ds["id"] }}
+        # A free-tier / small shape can be tight on the kubeadm preflight; tolerate.
+        ignorePreflightErrors:
+        - Mem
+        - NumCPU
+    joinConfiguration:
+      nodeRegistration:
+        kubeletExtraArgs:
+          cloud-provider: external
+          provider-id: oci://{{ ds["id"] }}
+        ignorePreflightErrors:
+        - Mem
+        - NumCPU
+  machineTemplate:
+    spec:
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: OCIMachineTemplate
+        name: "${CLUSTER_NAME}-control-plane"
+  replicas: ${CONTROL_PLANE_MACHINE_COUNT}
+  version: "${KUBERNETES_VERSION}"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: OCIMachineTemplate
+metadata:
+  name: "${CLUSTER_NAME}-control-plane"
+spec:
+  template:
+    spec:
+      compartmentId: "${OCI_COMPARTMENT_ID}"
+      imageId: "${OCI_IMAGE_ID}"
+      shape: "${OCI_CONTROL_PLANE_MACHINE_TYPE:=VM.Standard.E4.Flex}"
+      shapeConfig:
+        ocpus: "${OCI_MACHINE_TYPE_OCPUS:=2}"
+        memoryInGBs: "${OCI_MACHINE_TYPE_MEMORY_GBS:=16}"
+      metadata:
+        ssh_authorized_keys: "${OCI_SSH_KEY:=}"
+      networkDetails:
+        assignPublicIp: true
+      instanceOptions:
+        areLegacyImdsEndpointsDisabled: true
+---
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: MachineDeployment
+metadata:
+  name: "${CLUSTER_NAME}-md-0"
+spec:
+  clusterName: "${CLUSTER_NAME}"
+  replicas: ${WORKER_MACHINE_COUNT}
+  selector:
+    matchLabels: null
+  template:
+    spec:
+      bootstrap:
+        configRef:
+          apiGroup: bootstrap.cluster.x-k8s.io
+          kind: KubeadmConfigTemplate
+          name: "${CLUSTER_NAME}-md-0"
+      clusterName: "${CLUSTER_NAME}"
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: OCIMachineTemplate
+        name: "${CLUSTER_NAME}-md-0"
+      version: "${KUBERNETES_VERSION}"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: OCIMachineTemplate
+metadata:
+  name: "${CLUSTER_NAME}-md-0"
+spec:
+  template:
+    spec:
+      compartmentId: "${OCI_COMPARTMENT_ID}"
+      imageId: "${OCI_IMAGE_ID}"
+      shape: "${OCI_NODE_MACHINE_TYPE:=VM.Standard.E4.Flex}"
+      shapeConfig:
+        ocpus: "${OCI_MACHINE_TYPE_OCPUS:=2}"
+        memoryInGBs: "${OCI_MACHINE_TYPE_MEMORY_GBS:=16}"
+      metadata:
+        ssh_authorized_keys: "${OCI_SSH_KEY:=}"
+      networkDetails:
+        assignPublicIp: true
+      instanceOptions:
+        areLegacyImdsEndpointsDisabled: true
+---
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+kind: KubeadmConfigTemplate
+metadata:
+  name: "${CLUSTER_NAME}-md-0"
+spec:
+  template:
+    spec:
+      joinConfiguration:
+        nodeRegistration:
+          kubeletExtraArgs:
+            cloud-provider: external
+            provider-id: oci://{{ ds["id"] }}
+          ignorePreflightErrors:
+          - Mem
+          - NumCPU

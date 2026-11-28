@@ -36,6 +36,7 @@ import (
 	hypervprovider "github.com/klotho-k8s/klotho/provider/infrastructure/hyperv"
 	libvirtprovider "github.com/klotho-k8s/klotho/provider/infrastructure/libvirt"
 	linodeprovider "github.com/klotho-k8s/klotho/provider/infrastructure/linode"
+	ociprovider "github.com/klotho-k8s/klotho/provider/infrastructure/oci"
 	openstackprovider "github.com/klotho-k8s/klotho/provider/infrastructure/openstack"
 	proxmoxprovider "github.com/klotho-k8s/klotho/provider/infrastructure/proxmox"
 	vsphereprovider "github.com/klotho-k8s/klotho/provider/infrastructure/vsphere"
@@ -54,6 +55,7 @@ const (
 	providerDO        = "digitalocean"
 	providerVSphere   = "vsphere"
 	providerOpenStack = "openstack"
+	providerOCI       = "oci"
 	providerAzure     = "azure"
 	providerDocker    = "docker"
 	providerHyperv    = "hyperv"
@@ -529,6 +531,39 @@ func (a *app) infra(provider string) (infrastructure.Provider, error) {
 			return nil, err
 		}
 		return azureInfra{azureprovider.New(client, ac)}, nil
+	case providerOCI:
+		o := a.cfg.OCI
+		assignPublicIP := true
+		if o.AssignPublicIP != nil {
+			assignPublicIP = *o.AssignPublicIP
+		}
+		oc := ociprovider.Config{
+			CompartmentID:        o.CompartmentID,
+			Region:               o.Region,
+			AvailabilityDomain:   o.AvailabilityDomain,
+			VCNID:                o.VCNID,
+			SubnetID:             o.SubnetID,
+			NSGIDs:               o.NSGIDs,
+			ImageID:              o.ImageID,
+			Shape:                o.Shape,
+			OCPUs:                o.OCPUs,
+			MemoryGBs:            o.MemoryGBs,
+			BootVolumeGBs:        o.BootVolumeGBs,
+			AssignPublicIP:       assignPublicIP,
+			SSHAuthorizedKeys:    o.SSHAuthorizedKeys,
+			FreeformTags:         o.FreeformTags,
+			ResourceIdentifier:   o.ResourceIdentifier,
+			ControlPlaneEndpoint: o.ControlPlaneEndpoint,
+			Port:                 o.Port,
+			ConfigFile:           o.ConfigFile,
+			Profile:              o.Profile,
+			UseInstancePrincipal: o.UseInstancePrincipal,
+		}
+		client, err := ociprovider.NewClient(oc)
+		if err != nil {
+			return nil, err
+		}
+		return ociInfra{ociprovider.New(client, oc)}, nil
 	case providerDocker:
 		d := a.cfg.Docker
 		return dockerInfra{dockerprovider.New(nil, dockerprovider.Config{
@@ -602,7 +637,7 @@ func (a *app) infra(provider string) (infrastructure.Provider, error) {
 			SSHAuthorizedKey: v.SSHAuthorizedKey,
 		})}, nil
 	default:
-		return nil, fmt.Errorf("infrastructure provider %q: %w (available: %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", provider, ErrNotImplemented, providerProxmox, providerDocker, providerAWS, providerLinode, providerGCP, providerHetzner, providerDO, providerAzure, providerHyperv, providerLibvirt, providerVZ, providerVSphere, providerOpenStack)
+		return nil, fmt.Errorf("infrastructure provider %q: %w (available: %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", provider, ErrNotImplemented, providerProxmox, providerDocker, providerAWS, providerLinode, providerGCP, providerHetzner, providerDO, providerAzure, providerOCI, providerHyperv, providerLibvirt, providerVZ, providerVSphere, providerOpenStack)
 	}
 }
 
@@ -691,6 +726,13 @@ func (a *app) providerSecretData(provider string) map[string]string {
 				return map[string]string{"GCP_B64ENCODED_CREDENTIALS": base64.StdEncoding.EncodeToString(b)}
 			}
 		}
+	case providerOCI:
+		// CAPOCI's in-cluster controller authenticates with an OCIClusterIdentity
+		// (a referenced secret) or, on a self-managed node in a dynamic group, the
+		// instance principal — not a substituted env credential. klotho stores no
+		// raw OCI key, so no configSecret is handed over here; the identity is set
+		// up out of band (see provider/infrastructure/oci/TESTING.md).
+		return nil
 	case providerAzure:
 		az := a.cfg.Azure
 		data := map[string]string{}
@@ -815,6 +857,11 @@ type azureInfra struct{ *azureprovider.Provider }
 
 func (azureInfra) Tag(cluster string) string { return azureprovider.Tag(cluster) }
 
+// ociInfra adds the provider's freeform-tag convention to the OCI provider.
+type ociInfra struct{ *ociprovider.Provider }
+
+func (ociInfra) Tag(cluster string) string { return ociprovider.Tag(cluster) }
+
 // dockerInfra adds the provider's cluster-label convention to the Docker
 // provider.
 type dockerInfra struct{ *dockerprovider.Provider }
@@ -878,6 +925,7 @@ var (
 	_ klotho.Tagger = doInfra{}
 	_ klotho.Tagger = openstackInfra{}
 	_ klotho.Tagger = azureInfra{}
+	_ klotho.Tagger = ociInfra{}
 	_ klotho.Tagger = hypervInfra{}
 	_ klotho.Tagger = libvirtInfra{}
 	_ klotho.Tagger = vzInfra{}
@@ -907,6 +955,7 @@ var (
 	_ infrastructure.Provider      = doInfra{}
 	_ infrastructure.Provider      = openstackInfra{}
 	_ infrastructure.Provider      = azureInfra{}
+	_ infrastructure.Provider      = ociInfra{}
 	_ infrastructure.Provider      = hypervInfra{}
 	_ infrastructure.Provider      = libvirtInfra{}
 	_ infrastructure.Provider      = vzInfra{}

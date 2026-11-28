@@ -33,6 +33,7 @@ one adapter contract.
 | **Linode** | CAPL | ✅ Working | help wanted |
 | **Hetzner** | CAPH | ✅ Working | help wanted |
 | **OpenStack** | CAPO | ✅ Working | help wanted |
+| **OCI** | CAPOCI | ✅ Working | help wanted |
 | **Hyper-V** | CAPHV | ✅ Working | ✓ Windows host |
 | **libvirt / KVM** | CAPLV | ✅ Working | ✓ WSL2 / nested KVM |
 | **Apple `vz`** | CAPVZ | 🧪 Adapter ready | awaiting Mac run |
