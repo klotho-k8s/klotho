@@ -11,8 +11,10 @@ import (
 	"testing"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/klotho-k8s/klotho/pkg/cluster"
@@ -316,6 +318,44 @@ func TestCreateNodeTimeout(t *testing.T) {
 	}
 	if saved := h.store.state("demo"); saved == nil || saved.Reserved {
 		t.Fatal("state must stay")
+	}
+}
+
+func TestCreateRejectedBundleApplySurfacesFast(t *testing.T) {
+	h := newHarness(t)
+	// Stand in for server-side admission rejecting the KubeadmControlPlane on a
+	// schema mismatch: a permanent error that retrying can never clear.
+	admission := apierrors.NewInvalid(
+		schema.GroupKind{Group: "controlplane.cluster.x-k8s.io", Kind: "KubeadmControlPlane"},
+		"demo-control-plane",
+		field.ErrorList{field.Required(field.NewPath("spec", "machineTemplate", "infrastructureRef"), "is required")},
+	)
+	h.kube.applyFail = map[string]error{"KubeadmControlPlane": admission}
+	req := request()
+	// A generous apply window: the point is that the rejection is surfaced long
+	// before it elapses, not waited out.
+	req.Timeouts.Apply = time.Hour
+
+	start := time.Now()
+	_, err := Create(t.Context(), h.deps, req)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("want an error, got nil")
+	}
+	if !errors.Is(err, admission) {
+		t.Fatalf("rejection not surfaced: %v", err)
+	}
+	for _, want := range []string{"KubeadmControlPlane", "rejected", "infrastructureRef"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q missing %q", err.Error(), want)
+		}
+	}
+	if elapsed > 30*time.Second {
+		t.Fatalf("rejection took %s to surface; it must not wait out the apply timeout", elapsed)
+	}
+	if h.rec.has("kube.Apply klotho Machine") {
+		t.Fatal("converge proceeded past the rejected bundle apply")
 	}
 }
 

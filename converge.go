@@ -344,18 +344,41 @@ func ownerPatch(owner *unstructured.Unstructured) ([]byte, error) {
 }
 
 // applyAll applies objs in order, retrying from the first failure until
-// timeout.
+// timeout. A terminal rejection (a schema or admission error the server will
+// reject identically on every retry, per kube.Terminal) is surfaced at once,
+// naming the object and the admission message, rather than retried silently
+// until the timeout — so a bundle the API server rejects fails in seconds
+// instead of hanging out the whole apply window.
 func applyAll(ctx context.Context, deps Deps, cl kube.Cluster, manager string, objs []*unstructured.Unstructured, timeout time.Duration, what string) error {
 	next := 0
-	return waitFor(ctx, deps, timeout, "applying "+what, func(ctx context.Context) (bool, string) {
+	var rejected error
+	if err := waitFor(ctx, deps, timeout, "applying "+what, func(ctx context.Context) (bool, string) {
 		for next < len(objs) {
 			if err := cl.Apply(ctx, manager, objs[next]); err != nil {
+				if kube.Terminal(err) {
+					rejected = fmt.Errorf("%s rejected applying %s: %w",
+						describeObject(objs[next]), what, err)
+					return true, ""
+				}
 				return false, err.Error()
 			}
 			next++
 		}
 		return true, ""
-	})
+	}); err != nil {
+		return err
+	}
+	return rejected
+}
+
+// describeObject names an object as "Kind namespace/name" (or "Kind name" when
+// it carries no namespace), for error messages that must point at which object
+// in a bundle the API server rejected.
+func describeObject(o *unstructured.Unstructured) string {
+	if ns := o.GetNamespace(); ns != "" {
+		return fmt.Sprintf("%s %s/%s", o.GetKind(), ns, o.GetName())
+	}
+	return fmt.Sprintf("%s %s", o.GetKind(), o.GetName())
 }
 
 // waitFor calls check until it reports done, timeout passes, or ctx ends.

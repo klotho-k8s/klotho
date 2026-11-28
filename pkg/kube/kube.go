@@ -211,6 +211,28 @@ func (k *kubeCluster) List(ctx context.Context, gvk schema.GroupVersionKind, nam
 	return out, nil
 }
 
+// Terminal reports whether err from Apply is a permanent rejection that
+// retrying cannot clear. A schema or admission-webhook rejection (Invalid,
+// BadRequest, NotAcceptable), an authorization denial (Forbidden,
+// Unauthorized), or an unsupported request (MethodNotSupported) will fail the
+// same way on every retry, so Create surfaces it at once instead of waiting out
+// the apply timeout. A missing CRD (NotFound or a REST-mapper no-match), a
+// conflict, or any transient server error is NOT terminal, since Create installs
+// CRDs and providers while it applies and must keep retrying those.
+func Terminal(err error) bool {
+	switch {
+	case apierrors.IsInvalid(err),
+		apierrors.IsBadRequest(err),
+		apierrors.IsNotAcceptable(err),
+		apierrors.IsForbidden(err),
+		apierrors.IsUnauthorized(err),
+		apierrors.IsMethodNotSupported(err):
+		return true
+	default:
+		return false
+	}
+}
+
 func describeObj(o *unstructured.Unstructured) string {
 	s := o.GetKind() + " "
 	if ns := o.GetNamespace(); ns != "" {
