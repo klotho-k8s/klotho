@@ -82,6 +82,26 @@ func newCreateCommand() *cli.Command {
 				Name:  "service-cidr",
 				Usage: "service network `CIDR` for a generated bundle; repeatable for dual-stack",
 			},
+			&cli.StringFlag{
+				Name:  "capi-core-image",
+				Usage: "override the Cluster API core controller image (capi.images.core); e.g. a public ghcr.io mirror of a private default core image",
+			},
+			&cli.StringFlag{
+				Name:  "capi-bootstrap-image",
+				Usage: "override the Cluster API bootstrap controller image (capi.images.bootstrap)",
+			},
+			&cli.StringFlag{
+				Name:  "capi-controlplane-image",
+				Usage: "override the Cluster API control plane controller image (capi.images.controlPlane)",
+			},
+			&cli.StringFlag{
+				Name:  "provider-version",
+				Usage: "override the infrastructure provider version (providers.<name>.version)",
+			},
+			&cli.StringFlag{
+				Name:  "provider-image",
+				Usage: "override the infrastructure provider's manager image (providers.<name>.image)",
+			},
 			&cli.BoolFlag{
 				Name:  "install-kubernetes",
 				Usage: "install containerd and the bundle's Kubernetes version on every node at boot, for plain images (nodes.installKubernetes; --install-kubernetes=false overrides it)",
@@ -150,13 +170,18 @@ func runCreate(ctx context.Context, c *cli.Command) error {
 		return err
 	}
 	pref := a.cfg.Providers[provider]
+	// Per-component image and version levers: a flag wins over configuration,
+	// configuration wins over the provider/line default. An unset lever leaves
+	// the rendered CRs byte-identical to the default.
+	infraVersion := firstNonEmpty(c.String("provider-version"), pref.Version)
+	infraImage := firstNonEmpty(c.String("provider-image"), pref.Image)
 	req := klotho.CreateRequest{
 		Spec: cluster.Spec{
 			Name:      name,
 			Flavor:    flavor,
 			Variables: vars,
 		},
-		Provider:             generate.ProviderRef{Name: provider, Version: pref.Version, URL: pref.FetchURL},
+		Provider:             generate.ProviderRef{Name: provider, Version: infraVersion, URL: pref.FetchURL},
 		Kubernetes:           kubeVersion,
 		ControlPlaneReplicas: int(c.Int("control-plane-count")),
 		WorkerReplicas:       int(c.Int("worker-count")),
@@ -172,10 +197,13 @@ func runCreate(ctx context.Context, c *cli.Command) error {
 			Version:              a.cfg.CAPI.Version,
 			FetchURL:             a.cfg.CAPI.FetchURL,
 			FeatureGates:         a.cfg.CAPI.FeatureGates,
+			CoreImage:            firstNonEmpty(c.String("capi-core-image"), a.cfg.CAPI.Images.Core),
+			BootstrapImage:       firstNonEmpty(c.String("capi-bootstrap-image"), a.cfg.CAPI.Images.Bootstrap),
+			ControlPlaneImage:    firstNonEmpty(c.String("capi-controlplane-image"), a.cfg.CAPI.Images.ControlPlane),
 			InfraProviderName:    provider,
-			InfraProviderVersion: pref.Version,
+			InfraProviderVersion: infraVersion,
 			InfraFetchURL:        firstNonEmpty(pref.ComponentsURL, pref.FetchURL),
-			InfraImage:           pref.Image,
+			InfraImage:           infraImage,
 			ProviderSecretData:   a.providerSecretData(provider),
 		},
 		DefaultVariables:  a.cfg.Variables,
