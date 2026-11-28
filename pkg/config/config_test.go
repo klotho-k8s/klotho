@@ -349,6 +349,46 @@ s3:
 	}
 }
 
+func TestGCSBackend(t *testing.T) {
+	isolate(t)
+
+	writeConfig(t, `
+backend: gcs
+gcs:
+  bucket: klotho-state
+  prefix: clusters
+  credentialsFile: /etc/klotho/sa.json
+`)
+	c, err := Load("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.EffectiveBackend() != BackendGCS {
+		t.Errorf("backend = %s", c.EffectiveBackend())
+	}
+	g := c.GCSBackend
+	if g.Bucket != "klotho-state" || g.Prefix != "clusters" || g.CredentialsFile != "/etc/klotho/sa.json" {
+		t.Errorf("gcs = %+v", g)
+	}
+
+	// credentialsFile falls back to GOOGLE_APPLICATION_CREDENTIALS when unset.
+	writeConfig(t, "backend: gcs\ngcs:\n  bucket: b\n")
+	t.Setenv(EnvGCPCredentials, "/env/sa.json")
+	c, err = Load("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.GCSBackend.CredentialsFile != "/env/sa.json" {
+		t.Errorf("credentialsFile not taken from the environment: %+v", c.GCSBackend)
+	}
+
+	// A missing bucket is an error that names the gcs section.
+	writeConfig(t, "backend: gcs\n")
+	if _, err := Load("", ""); err == nil || !strings.Contains(err.Error(), "gcs") {
+		t.Errorf("missing bucket: err = %v", err)
+	}
+}
+
 func TestPayloadS3(t *testing.T) {
 	isolate(t)
 
