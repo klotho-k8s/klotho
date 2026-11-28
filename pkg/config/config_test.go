@@ -22,7 +22,7 @@ func isolate(t *testing.T) string {
 	t.Setenv("XDG_STATE_HOME", filepath.Join(dir, "state"))
 	for _, e := range []string{EnvBackend, EnvStateDir, EnvIdentityFile, EnvRecipients,
 		EnvProxmoxURL, EnvProxmoxTokenID, EnvProxmoxSecret, EnvProxmoxInsecure,
-		EnvS3AccessKeyID, EnvS3SecretKey, EnvLinodeToken} {
+		EnvS3AccessKeyID, EnvS3SecretKey, EnvLinodeToken, EnvHetznerToken} {
 		t.Setenv(e, "")
 	}
 	return dir
@@ -120,6 +120,9 @@ func TestLoadMissingFileGivesDefaults(t *testing.T) {
 	if c.Providers[ProviderGCP].Version != DefaultGCPVersion {
 		t.Errorf("gcp default version = %q, want %q", c.Providers[ProviderGCP].Version, DefaultGCPVersion)
 	}
+	if c.Providers[ProviderHetzner].Version != DefaultHetznerVersion {
+		t.Errorf("hetzner default version = %q, want %q", c.Providers[ProviderHetzner].Version, DefaultHetznerVersion)
+	}
 	if c.Providers[ProviderAzure].Version != DefaultAzureVersion {
 		t.Errorf("azure default version = %q, want %q", c.Providers[ProviderAzure].Version, DefaultAzureVersion)
 	}
@@ -143,6 +146,27 @@ func TestLinodeTokenFromEnvOnly(t *testing.T) {
 	}
 	if c.Linode.Token != "tok-from-env" {
 		t.Errorf("token = %q, want the environment value", c.Linode.Token)
+	}
+}
+
+func TestHetznerTokenFromEnvOnly(t *testing.T) {
+	isolate(t)
+	// A token set in the file must be ignored (the field is json:"-"); only the
+	// environment supplies it.
+	writeConfig(t, "hetzner:\n  location: fsn1\n  sshKeys:\n  - klotho\n  controlPlaneEndpoint: cp.example.com\n")
+	t.Setenv(EnvHetznerToken, "tok-from-env")
+	c, err := Load("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Hetzner.Location != "fsn1" || c.Hetzner.ControlPlaneEndpoint != "cp.example.com" {
+		t.Errorf("hetzner config not loaded: %+v", c.Hetzner)
+	}
+	if len(c.Hetzner.SSHKeys) != 1 || c.Hetzner.SSHKeys[0] != "klotho" {
+		t.Errorf("hetzner sshKeys = %v", c.Hetzner.SSHKeys)
+	}
+	if c.Hetzner.Token != "tok-from-env" {
+		t.Errorf("token = %q, want the environment value", c.Hetzner.Token)
 	}
 }
 

@@ -44,10 +44,11 @@ inside)
 | libvirt / KVM | CAPLV | by name | node-zero IP | ✅ | ✅ create → pivot → clean delete | 🧹 destroy + undefine (libvirtd external, no sidecar) | WSL2 nested KVM |
 | Linode | CAPL | by `providerID` | $0 option (NodeBalancer optional) | ✅ | 🟡 live run pending | 🚧 finisher TODO | — |
 | GCP | CAPG | by name | managed LB (forced) | ✅ | 🟡 **help wanted** | 🚧 finisher TODO | — |
+| Hetzner | CAPH | by name (no pre-set id) | $0 option (LB disabled) | ✅ | 🟡 **help wanted** | 🚧 finisher TODO | — |
 | Azure | CAPZ | by name (pre-set ok) | internal LB (forced) | ✅ | 🟡 **help wanted** | 🚧 finisher TODO | — |
 | Apple `vz` | CAPVZ | by name / `providerID` | node-zero IP | ✅ adapter | 🟡 awaiting Mac run | 🧹 daemon finisher (no deadlock) | macOS / Apple Silicon |
 
-*Planned next:* vSphere (CAPV), OpenStack (CAPO), Hetzner (CAPH).
+*Planned next:* vSphere (CAPV), OpenStack (CAPO).
 
 ## Provider notes
 
@@ -87,6 +88,23 @@ Adopts node zero by name. Stock CAPG always provisions a managed external load b
 (an unavoidable ~$20–30/mo standing cost); klotho reserves the same global IP so the
 endpoint is known before cert-minting. Build + unit green; **never run live** (no GCP
 credentials in the dev environment). See `provider/infrastructure/gcp/TESTING.md`.
+
+### Hetzner Cloud (CAPH) — help wanted
+Adopts node zero by name (hcloud variant, not the bare-metal Robot path): klotho
+boots a `<cluster>-bootstrap` Hetzner Cloud server with its cloud-init in the
+server's `user_data`, and CAPH adopts it by name — on reconcile CAPH tries to
+create a server of the same name, hits Hetzner's `uniqueness_error`, and resolves
+it by finding and adopting the existing server, then setting `providerID`
+(`hcloud://<id>`) itself. So klotho must **not** pre-set `spec.providerID` (the
+GCP/CAPD model). The cost-safe flat template disables CAPH's managed load balancer
+(`controlPlaneLoadBalancer.enabled: false`) and the private network, so the only
+standing cost is the servers; klotho supplies the control plane endpoint (a DNS
+name you point at node zero). No cloud controller manager — a `preKubeadmCommand`
+reads the numeric server ID from Hetzner's instance-metadata service and sets the
+kubelet `--provider-id=hcloud://<id>` directly. klotho reaches hcloud with the
+official Go SDK ([`hcloud-go`](https://github.com/hetznercloud/hcloud-go)) using an
+`HCLOUD_TOKEN`. Build + unit green; **never run live** (no Hetzner credentials in
+the dev environment). See `provider/infrastructure/hetzner/TESTING.md`.
 
 ### Azure (CAPZ) — help wanted
 Adopts node zero by name; a pre-set `providerID` is fine (CAPL-style). Uses an internal
@@ -132,7 +150,9 @@ If you have access to any of these, you can move a provider from 🟡 to ✅:
 - **GCP** — a GCP project with Compute access. Run `provider/infrastructure/gcp/TESTING.md`.
 - **Azure** — a subscription + a service principal. Run `provider/infrastructure/azure/TESTING.md`.
 - **Linode** — an API token. Run `provider/infrastructure/linode/TESTING.md`.
-- **vSphere / OpenStack / Hetzner** — provider work is planned; if you'd run the live test,
+- **Hetzner Cloud** — an hcloud API token and an SSH key in the project. Run
+  `provider/infrastructure/hetzner/TESTING.md`.
+- **vSphere / OpenStack** — provider work is planned; if you'd run the live test,
   tell us and we'll prioritize that provider.
 
 For each run, the three things we care about:

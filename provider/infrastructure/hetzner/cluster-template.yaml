@@ -1,0 +1,167 @@
+# klotho flat, cost-safe Hetzner Cloud (CAPH) cluster template.
+#
+# It is authored in the Cluster API v1beta2 contract (CAPI-core object
+# references use apiGroup, not apiVersion), which is what klotho's generator
+# requires. The Hetzner infrastructure objects are
+# infrastructure.cluster.x-k8s.io/v1beta1 - CAPH's storage version - and klotho
+# enforces the v1beta2 contract only on the CAPI-core objects (Cluster,
+# KubeadmControlPlane, MachineDeployment, KubeadmConfigTemplate), which are all
+# v1beta2 here.
+#
+# It is deliberately cheap to run:
+#   * controlPlaneLoadBalancer.enabled: false - CAPH provisions NO managed load
+#     balancer (a Hetzner LB bills hourly). klotho supplies the control plane
+#     endpoint (hetzner.controlPlaneEndpoint, a DNS name you point at node zero),
+#     which klotho patches onto the HetznerCluster's spec.controlPlaneEndpoint.
+#   * hcloudNetwork.enabled: false - no private network to pay for; node zero and
+#     the CAPH-managed machines use their public IPs.
+#   * A single control plane on the smallest server type that clears kubeadm's
+#     two-CPU preflight (cpx21 by default: 3 shared vCPU, 4 GB).
+#   * The machine templates set no volumes, so when CAPH adopts node zero nothing
+#     reshapes the running server.
+#
+# klotho fills CLUSTER_NAME, NAMESPACE, KUBERNETES_VERSION,
+# CONTROL_PLANE_MACHINE_COUNT and WORKER_MACHINE_COUNT itself, patches the
+# control plane endpoint onto the HetznerCluster, and the Hetzner provider's
+# Prepare fills HCLOUD_LOCATION, HCLOUD_CONTROL_PLANE_MACHINE_TYPE,
+# HCLOUD_WORKER_MACHINE_TYPE, HCLOUD_IMAGE_NAME and HCLOUD_SSH_KEY. Nothing else
+# needs to be supplied.
+#
+# CAPH reads the Hetzner API token from a Secret named "hetzner" (key "hcloud")
+# in the cluster's namespace; create it before (or let klotho deliver it with)
+# the bundle - see TESTING.md.
+#
+# The base image (ubuntu-22.04) carries no Kubernetes, so create with klotho's
+# install-at-boot (nodes.installKubernetes / --install-kubernetes). No CNI is
+# shipped; apply one after the API server is up, e.g.
+# kubectl apply -f <cilium/calico manifest>.
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: "${CLUSTER_NAME}"
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks:
+      - 10.244.0.0/16
+  controlPlaneRef:
+    apiGroup: controlplane.cluster.x-k8s.io
+    kind: KubeadmControlPlane
+    name: "${CLUSTER_NAME}-control-plane"
+  infrastructureRef:
+    apiGroup: infrastructure.cluster.x-k8s.io
+    kind: HetznerCluster
+    name: "${CLUSTER_NAME}"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: HetznerCluster
+metadata:
+  name: "${CLUSTER_NAME}"
+spec:
+  # klotho patches spec.controlPlaneEndpoint (host/port) from the configured
+  # hetzner.controlPlaneEndpoint; with it set and the load balancer disabled,
+  # CAPH creates no load balancer.
+  controlPlaneEndpoint:
+    host: "${CONTROL_PLANE_ENDPOINT_IP}"
+    port: ${CONTROL_PLANE_ENDPOINT_PORT:=6443}
+  controlPlaneLoadBalancer:
+    enabled: false
+  controlPlaneRegions:
+  - "${HCLOUD_LOCATION}"
+  hcloudNetwork:
+    enabled: false
+  hetznerSecretRef:
+    name: hetzner
+    key:
+      hcloudToken: hcloud
+  sshKeys:
+    hcloud:
+    - name: "${HCLOUD_SSH_KEY}"
+---
+apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+kind: KubeadmControlPlane
+metadata:
+  name: "${CLUSTER_NAME}-control-plane"
+spec:
+  kubeadmConfigSpec:
+    initConfiguration:
+      localAPIEndpoint:
+        bindPort: ${CONTROL_PLANE_ENDPOINT_PORT:=6443}
+    # No cloud controller manager: the kubelet's provider-id is set directly to
+    # hcloud://<server-id>, read from Hetzner's instance metadata service, which
+    # is the only thing Cluster API needs to bind each Machine to its Node.
+    preKubeadmCommands:
+    - |
+      mkdir -p /etc/systemd/system/kubelet.service.d
+      printf '[Service]\nEnvironment="KUBELET_EXTRA_ARGS=--provider-id=hcloud://%s"\n' \
+        "$(curl -sf http://169.254.169.254/hetzner/v1/metadata/instance-id)" \
+        > /etc/systemd/system/kubelet.service.d/20-hcloud.conf
+  machineTemplate:
+    spec:
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: HCloudMachineTemplate
+        name: "${CLUSTER_NAME}-control-plane"
+  replicas: ${CONTROL_PLANE_MACHINE_COUNT}
+  version: "${KUBERNETES_VERSION}"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: HCloudMachineTemplate
+metadata:
+  name: "${CLUSTER_NAME}-control-plane"
+spec:
+  template:
+    spec:
+      type: "${HCLOUD_CONTROL_PLANE_MACHINE_TYPE}"
+      imageName: "${HCLOUD_IMAGE_NAME:=ubuntu-22.04}"
+      sshKeys:
+      - name: "${HCLOUD_SSH_KEY}"
+---
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: MachineDeployment
+metadata:
+  name: "${CLUSTER_NAME}-md-0"
+spec:
+  clusterName: "${CLUSTER_NAME}"
+  replicas: ${WORKER_MACHINE_COUNT}
+  selector:
+    matchLabels: null
+  template:
+    spec:
+      bootstrap:
+        configRef:
+          apiGroup: bootstrap.cluster.x-k8s.io
+          kind: KubeadmConfigTemplate
+          name: "${CLUSTER_NAME}-md-0"
+      clusterName: "${CLUSTER_NAME}"
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: HCloudMachineTemplate
+        name: "${CLUSTER_NAME}-md-0"
+      version: "${KUBERNETES_VERSION}"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: HCloudMachineTemplate
+metadata:
+  name: "${CLUSTER_NAME}-md-0"
+spec:
+  template:
+    spec:
+      type: "${HCLOUD_WORKER_MACHINE_TYPE}"
+      imageName: "${HCLOUD_IMAGE_NAME:=ubuntu-22.04}"
+      sshKeys:
+      - name: "${HCLOUD_SSH_KEY}"
+---
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+kind: KubeadmConfigTemplate
+metadata:
+  name: "${CLUSTER_NAME}-md-0"
+spec:
+  template:
+    spec:
+      preKubeadmCommands:
+      - |
+        mkdir -p /etc/systemd/system/kubelet.service.d
+        printf '[Service]\nEnvironment="KUBELET_EXTRA_ARGS=--provider-id=hcloud://%s"\n' \
+          "$(curl -sf http://169.254.169.254/hetzner/v1/metadata/instance-id)" \
+          > /etc/systemd/system/kubelet.service.d/20-hcloud.conf
