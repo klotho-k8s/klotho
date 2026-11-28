@@ -58,6 +58,9 @@ const (
 	EnvS3AccessKeyID   = "KLOTHO_S3_ACCESS_KEY_ID"
 	EnvS3SecretKey     = "KLOTHO_S3_SECRET_ACCESS_KEY"
 	EnvLinodeToken     = "LINODE_TOKEN"
+	// EnvDOToken is the DigitalOcean API token; it sets digitalocean.token when
+	// that is unset. klotho never writes it back to disk.
+	EnvDOToken = "DIGITALOCEAN_TOKEN"
 	// EnvGCPCredentials is the standard GCP service-account key path; klotho
 	// reads it for gcp.credentialsFile when that is unset.
 	EnvGCPCredentials = "GOOGLE_APPLICATION_CREDENTIALS"
@@ -97,6 +100,12 @@ const (
 	// klotho requires. VERIFY the release and the contract compatibility against
 	// a live run.
 	DefaultGCPVersion = "v1.8.1"
+	// DefaultDOVersion is the Cluster API Provider DigitalOcean (CAPDO) release
+	// installed for the digitalocean provider. CAPDO's infrastructure objects are
+	// infrastructure.cluster.x-k8s.io/v1beta1; the flat cluster template authors
+	// the CAPI-core objects in the v1beta2 contract klotho requires. VERIFY the
+	// release and the contract compatibility against a live run.
+	DefaultDOVersion = "v1.7.0"
 	// DefaultAzureVersion is the Cluster API Provider Azure (CAPZ) release
 	// installed for the azure provider. CAPZ v1.23.x is built against Cluster
 	// API v1.12.x (DefaultCAPIVersion), and its infrastructure CRDs are
@@ -111,6 +120,9 @@ const (
 	// ProviderGCP is the gcp infrastructure provider's name, as clusterctl and
 	// --provider know it.
 	ProviderGCP = "gcp"
+	// ProviderDO is the digitalocean infrastructure provider's name, as
+	// clusterctl and --provider know it.
+	ProviderDO = "digitalocean"
 	// ProviderAzure is the azure infrastructure provider's name, as clusterctl
 	// and --provider know it.
 	ProviderAzure = "azure"
@@ -201,20 +213,21 @@ type Config struct {
 	// effective backend is "s3".
 	S3Backend S3Backend `json:"s3,omitempty"`
 	// SSHAuthorizedKeys are installed for the bootstrap node's default user.
-	SSHAuthorizedKeys []string   `json:"sshAuthorizedKeys,omitempty"`
-	Encryption        Encryption `json:"encryption,omitempty"`
-	Proxmox           Proxmox    `json:"proxmox,omitempty"`
-	AWS               AWS        `json:"aws,omitempty"`
-	Linode            Linode     `json:"linode,omitempty"`
-	GCP               GCP        `json:"gcp,omitempty"`
-	Hetzner           Hetzner    `json:"hetzner,omitempty"`
-	Azure             Azure      `json:"azure,omitempty"`
-	Docker            Docker     `json:"docker,omitempty"`
-	Hyperv            Hyperv     `json:"hyperv,omitempty"`
-	Libvirt           Libvirt    `json:"libvirt,omitempty"`
-	VZ                VZ         `json:"vz,omitempty"`
-	VSphere           VSphere    `json:"vsphere,omitempty"`
-	CAPI              CAPI       `json:"capi,omitempty"`
+	SSHAuthorizedKeys []string     `json:"sshAuthorizedKeys,omitempty"`
+	Encryption        Encryption   `json:"encryption,omitempty"`
+	Proxmox           Proxmox      `json:"proxmox,omitempty"`
+	AWS               AWS          `json:"aws,omitempty"`
+	Linode            Linode       `json:"linode,omitempty"`
+	GCP               GCP          `json:"gcp,omitempty"`
+	Hetzner           Hetzner      `json:"hetzner,omitempty"`
+	DigitalOcean      DigitalOcean `json:"digitalocean,omitempty"`
+	Azure             Azure        `json:"azure,omitempty"`
+	Docker            Docker       `json:"docker,omitempty"`
+	Hyperv            Hyperv       `json:"hyperv,omitempty"`
+	Libvirt           Libvirt      `json:"libvirt,omitempty"`
+	VZ                VZ           `json:"vz,omitempty"`
+	VSphere           VSphere      `json:"vsphere,omitempty"`
+	CAPI              CAPI         `json:"capi,omitempty"`
 	// K0smotron configures the k0smotron bootstrap and control-plane providers
 	// installed for --control-plane k0s. Empty fields use built-in defaults.
 	K0smotron K0smotron `json:"k0smotron,omitempty"`
@@ -422,6 +435,46 @@ type Hetzner struct {
 	// certificates and node zero's cloud-init before the node boots, and the flat
 	// template disables CAPH's load balancer. The cheapest choice is a DNS name
 	// you control, pointed at node zero after it boots.
+	ControlPlaneEndpoint string `json:"controlPlaneEndpoint,omitempty"`
+	// Port is the API server port; zero means 6443.
+	Port int `json:"port,omitempty"`
+}
+
+// DigitalOcean holds the DigitalOcean connection and placement settings for the
+// digitalocean (CAPDO) provider. The API token is not stored here; it comes from
+// the environment (DIGITALOCEAN_TOKEN) and is never written back to disk.
+type DigitalOcean struct {
+	// Token is the DigitalOcean API token. It comes only from the environment
+	// (DIGITALOCEAN_TOKEN), is never accepted from or written to the config file,
+	// and is handed to the in-cluster CAPDO controller as its credential.
+	Token string `json:"-"`
+	// Region is the DigitalOcean region slug, e.g. "nyc3". Required for the
+	// digitalocean provider.
+	Region string `json:"region,omitempty"`
+	// Size sizes the bootstrap droplet (and the template's machines); empty means
+	// s-2vcpu-4gb, the smallest size that clears kubeadm's two-CPU control-plane
+	// preflight.
+	Size string `json:"size,omitempty"`
+	// Image is the bootstrap image slug or numeric ID; empty means
+	// ubuntu-22-04-x64 (a plain image, so install-at-boot is needed).
+	Image string `json:"image,omitempty"`
+	// SSHKeys are DigitalOcean SSH key fingerprints or IDs (already in the
+	// account) installed on the bootstrap droplet, so a failed bootstrap can be
+	// diagnosed.
+	SSHKeys []string `json:"sshKeys,omitempty"`
+	// Tags are extra DigitalOcean tags added to the bootstrap droplet.
+	Tags []string `json:"tags,omitempty"`
+	// VPCUUID places the bootstrap droplet (and CAPDO's machines) in an existing
+	// VPC; empty uses the region's default VPC.
+	VPCUUID string `json:"vpcUuid,omitempty"`
+	// LoadBalancerID reuses an existing DigitalOcean load balancer as the control
+	// plane endpoint instead of creating one; empty means klotho creates one (an
+	// unavoidable ~$12/mo standing cost, since stock CAPDO always fronts the API
+	// server with a load balancer) so the endpoint is known before cert-minting.
+	LoadBalancerID string `json:"loadBalancerId,omitempty"`
+	// ControlPlaneEndpoint is the API server host. Empty means klotho creates (or
+	// reuses, see LoadBalancerID) a load balancer and uses its IP. A value here is
+	// used as-is (a DNS name you point at the load balancer).
 	ControlPlaneEndpoint string `json:"controlPlaneEndpoint,omitempty"`
 	// Port is the API server port; zero means 6443.
 	Port int `json:"port,omitempty"`
@@ -1450,6 +1503,11 @@ func (c *Config) applyEnv() error {
 	if v, ok := os.LookupEnv(EnvHetznerToken); ok && v != "" {
 		c.Hetzner.Token = v
 	}
+	if c.DigitalOcean.Token == "" {
+		if v, ok := os.LookupEnv(EnvDOToken); ok && v != "" {
+			c.DigitalOcean.Token = v
+		}
+	}
 	if c.GCP.CredentialsFile == "" {
 		if v, ok := os.LookupEnv(EnvGCPCredentials); ok && v != "" {
 			c.GCP.CredentialsFile = v
@@ -1526,6 +1584,11 @@ func (c *Config) applyDefaults() {
 		hetzner.Version = DefaultHetznerVersion
 	}
 	c.Providers[ProviderHetzner] = hetzner
+	do := c.Providers[ProviderDO]
+	if do.Version == "" {
+		do.Version = DefaultDOVersion
+	}
+	c.Providers[ProviderDO] = do
 	azure := c.Providers[ProviderAzure]
 	if azure.Version == "" {
 		azure.Version = DefaultAzureVersion

@@ -1,0 +1,149 @@
+# klotho flat, cost-aware DigitalOcean (CAPDO) cluster template.
+#
+# It is authored in the Cluster API v1beta2 contract for the core objects
+# (Cluster, KubeadmControlPlane, MachineDeployment, KubeadmConfigTemplate use
+# apiGroup references, which is what klotho's generator requires). The
+# DigitalOcean infrastructure objects are infrastructure.cluster.x-k8s.io/
+# v1beta1, CAPDO's storage version.
+#
+# It is deliberately cheap to run:
+#   * A single control plane on the smallest Droplet size that clears kubeadm's
+#     two-CPU preflight (s-2vcpu-4gb by default).
+#   * No VPC override, no managed add-ons, no DigitalOcean cloud controller
+#     manager. The base image carries no Kubernetes, so create with klotho's
+#     install-at-boot (nodes.installKubernetes / --install-kubernetes). No CNI is
+#     shipped; apply one after the API server is up. Until a CNI and the
+#     DigitalOcean CCM are applied, nodes stay NotReady and only node zero (whose
+#     DOMachine klotho adopts by provider ID) is bound.
+#
+# UNAVOIDABLE cost: stock CAPDO ALWAYS fronts the API server with a managed
+# DigitalOcean load balancer (billed ~$12/mo even idle) and overwrites
+# spec.controlPlaneEndpoint with the load balancer's IP; it cannot be disabled
+# upstream. klotho creates that load balancer up front (named "<cluster>-
+# apiserver", targeting the apiserver role tag that Launch puts on node zero) so
+# the endpoint is known before the certificates are minted, and injects its UUID
+# into spec.network.apiServerLoadbalancers.resourceId below so CAPDO adopts it
+# rather than provisioning a second. Delete the cluster when you are done.
+#
+# klotho fills CLUSTER_NAME, NAMESPACE, KUBERNETES_VERSION,
+# CONTROL_PLANE_MACHINE_COUNT and WORKER_MACHINE_COUNT itself, and the
+# DigitalOcean provider's Prepare fills DO_REGION, DO_CONTROL_PLANE_MACHINE_TYPE,
+# DO_NODE_MACHINE_TYPE, DO_IMAGE and DO_LOADBALANCER_ID. The control plane
+# endpoint (the load balancer's IP) is patched onto the DOCluster by klotho.
+#
+# NOTE: CAPDO requires DOMachine.spec.sshKeys. It is left empty here (klotho
+# reaches node zero through cloud-init, not SSH); add your DigitalOcean SSH key
+# fingerprint(s) to the DOMachineTemplates if you want shell access to the
+# CAPDO-managed machines for diagnostics.
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: "${CLUSTER_NAME}"
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks:
+      - 192.168.0.0/16
+  controlPlaneRef:
+    apiGroup: controlplane.cluster.x-k8s.io
+    kind: KubeadmControlPlane
+    name: "${CLUSTER_NAME}-control-plane"
+  infrastructureRef:
+    apiGroup: infrastructure.cluster.x-k8s.io
+    kind: DOCluster
+    name: "${CLUSTER_NAME}"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: DOCluster
+metadata:
+  name: "${CLUSTER_NAME}"
+spec:
+  region: "${DO_REGION}"
+  # klotho patches spec.controlPlaneEndpoint (host/port) with the load balancer's
+  # IP it resolved in Prepare; CAPDO re-sets it to the same load balancer's IP.
+  controlPlaneEndpoint:
+    host: "${CONTROL_PLANE_ENDPOINT_IP}"
+    port: ${CONTROL_PLANE_ENDPOINT_PORT:=6443}
+  network:
+    apiServerLoadbalancers:
+      # The UUID of the load balancer klotho created (or reused). With it set,
+      # CAPDO adopts that load balancer instead of creating another.
+      resourceId: "${DO_LOADBALANCER_ID}"
+      port: ${CONTROL_PLANE_ENDPOINT_PORT:=6443}
+---
+apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+kind: KubeadmControlPlane
+metadata:
+  name: "${CLUSTER_NAME}-control-plane"
+spec:
+  replicas: ${CONTROL_PLANE_MACHINE_COUNT}
+  version: "${KUBERNETES_VERSION}"
+  machineTemplate:
+    spec:
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: DOMachineTemplate
+        name: "${CLUSTER_NAME}-control-plane"
+  kubeadmConfigSpec:
+    initConfiguration:
+      nodeRegistration:
+        name: '{{ ds.meta_data.hostname }}'
+    joinConfiguration:
+      nodeRegistration:
+        name: '{{ ds.meta_data.hostname }}'
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: DOMachineTemplate
+metadata:
+  name: "${CLUSTER_NAME}-control-plane"
+spec:
+  template:
+    spec:
+      size: "${DO_CONTROL_PLANE_MACHINE_TYPE}"
+      image: "${DO_IMAGE:=ubuntu-22-04-x64}"
+      sshKeys: []
+---
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: MachineDeployment
+metadata:
+  name: "${CLUSTER_NAME}-md-0"
+spec:
+  clusterName: "${CLUSTER_NAME}"
+  replicas: ${WORKER_MACHINE_COUNT}
+  selector:
+    matchLabels: null
+  template:
+    spec:
+      clusterName: "${CLUSTER_NAME}"
+      version: "${KUBERNETES_VERSION}"
+      bootstrap:
+        configRef:
+          apiGroup: bootstrap.cluster.x-k8s.io
+          kind: KubeadmConfigTemplate
+          name: "${CLUSTER_NAME}-md-0"
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: DOMachineTemplate
+        name: "${CLUSTER_NAME}-md-0"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: DOMachineTemplate
+metadata:
+  name: "${CLUSTER_NAME}-md-0"
+spec:
+  template:
+    spec:
+      size: "${DO_NODE_MACHINE_TYPE}"
+      image: "${DO_IMAGE:=ubuntu-22-04-x64}"
+      sshKeys: []
+---
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+kind: KubeadmConfigTemplate
+metadata:
+  name: "${CLUSTER_NAME}-md-0"
+spec:
+  template:
+    spec:
+      joinConfiguration:
+        nodeRegistration:
+          name: '{{ ds.meta_data.hostname }}'
