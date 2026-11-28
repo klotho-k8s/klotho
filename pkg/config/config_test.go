@@ -22,7 +22,8 @@ func isolate(t *testing.T) string {
 	t.Setenv("XDG_STATE_HOME", filepath.Join(dir, "state"))
 	for _, e := range []string{EnvBackend, EnvStateDir, EnvIdentityFile, EnvRecipients,
 		EnvProxmoxURL, EnvProxmoxTokenID, EnvProxmoxSecret, EnvProxmoxInsecure,
-		EnvS3AccessKeyID, EnvS3SecretKey, EnvLinodeToken, EnvHetznerToken} {
+		EnvS3AccessKeyID, EnvS3SecretKey, EnvLinodeToken, EnvHetznerToken,
+		EnvVaultAddr, EnvVaultToken, EnvVaultNamespace} {
 		t.Setenv(e, "")
 	}
 	return dir
@@ -346,6 +347,64 @@ s3:
 	t.Setenv(EnvS3SecretKey, "")
 	if _, err := Load("", ""); err == nil || !strings.Contains(err.Error(), EnvS3SecretKey) {
 		t.Errorf("half a key pair: %v", err)
+	}
+}
+
+func TestVaultBackend(t *testing.T) {
+	isolate(t)
+
+	writeConfig(t, `
+backend: vault
+vault:
+  address: https://vault.example:8200
+  mount: kv
+  prefix: klotho/clusters
+  namespace: team-a
+`)
+	t.Setenv(EnvVaultToken, "s.sometoken")
+	c, err := Load("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.EffectiveBackend() != BackendVault {
+		t.Errorf("backend = %s", c.EffectiveBackend())
+	}
+	v := c.VaultBackend
+	if v.Address != "https://vault.example:8200" || v.Mount != "kv" || v.Prefix != "klotho/clusters" || v.Namespace != "team-a" {
+		t.Errorf("vault = %+v", v)
+	}
+	if v.Token != "s.sometoken" {
+		t.Errorf("token not taken from the environment: %+v", v)
+	}
+
+	// The token never comes from the file (DisallowUnknownFields rejects it).
+	writeConfig(t, "backend: vault\nvault:\n  address: https://v:8200\n  token: s.leak\n")
+	if _, err := Load("", ""); err == nil {
+		t.Error("token in the file accepted")
+	}
+
+	// The address may come from VAULT_ADDR instead of the file.
+	writeConfig(t, "backend: vault\n")
+	t.Setenv(EnvVaultAddr, "https://vault.env:8200")
+	c, err = Load("", "")
+	if err != nil {
+		t.Fatalf("address from %s: %v", EnvVaultAddr, err)
+	}
+	if c.VaultBackend.Address != "https://vault.env:8200" {
+		t.Errorf("address not taken from %s: %+v", EnvVaultAddr, c.VaultBackend)
+	}
+
+	// A missing address (no file value, no VAULT_ADDR) is an error.
+	t.Setenv(EnvVaultAddr, "")
+	writeConfig(t, "backend: vault\n")
+	if _, err := Load("", ""); err == nil || !strings.Contains(err.Error(), "vault") {
+		t.Errorf("missing address: %v", err)
+	}
+
+	// A non-http(s) address is rejected.
+	writeConfig(t, "backend: vault\nvault:\n  address: vault:8200\n")
+	if _, err := Load("", ""); err == nil || !strings.Contains(err.Error(), "vault") {
+		t.Errorf("bad address: %v", err)
 	}
 }
 

@@ -36,7 +36,7 @@ func New(info BuildInfo) *cli.Command {
 			},
 			&cli.StringFlag{
 				Name:    "backend",
-				Usage:   "state backend to use (proxmox, file)",
+				Usage:   "state backend to use (proxmox, file, s3, vault)",
 				Sources: cli.EnvVars("KLOTHO_BACKEND"),
 			},
 			&cli.StringFlag{

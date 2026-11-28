@@ -21,6 +21,7 @@ import (
 	filebackend "github.com/klotho-k8s/klotho/provider/backend/file"
 	proxmoxbackend "github.com/klotho-k8s/klotho/provider/backend/proxmox"
 	s3backend "github.com/klotho-k8s/klotho/provider/backend/s3"
+	vaultbackend "github.com/klotho-k8s/klotho/provider/backend/vault"
 	"github.com/klotho-k8s/klotho/provider/controlplane"
 	"github.com/klotho-k8s/klotho/provider/controlplane/k0s"
 	"github.com/klotho-k8s/klotho/provider/controlplane/k3s"
@@ -171,6 +172,20 @@ func newApp(c *cli.Command) (*app, error) {
 			UsePathStyle:    s.UsePathStyle,
 			AccessKeyID:     s.AccessKeyID,
 			SecretAccessKey: s.SecretAccessKey,
+		}, codec)
+		if err != nil {
+			return nil, err
+		}
+		a.store = store
+	case config.BackendVault:
+		v := cfg.VaultBackend
+		store, err := vaultbackend.New(vaultbackend.Config{
+			Address:   v.Address,
+			Token:     v.Token,
+			Mount:     v.Mount,
+			Prefix:    v.Prefix,
+			Namespace: v.Namespace,
+			Insecure:  v.Insecure,
 		}, codec)
 		if err != nil {
 			return nil, err
