@@ -72,6 +72,11 @@ const (
 	// EnvHetznerToken is the Hetzner Cloud API token; it sets hetzner.token when
 	// that is unset. klotho never writes it back to disk.
 	EnvHetznerToken = "HCLOUD_TOKEN"
+	// EnvVSphereUsername and EnvVSpherePassword are the vCenter credentials; they
+	// set vsphere.username / vsphere.password when those are unset. klotho never
+	// writes the password back to disk.
+	EnvVSphereUsername = "VSPHERE_USERNAME"
+	EnvVSpherePassword = "VSPHERE_PASSWORD"
 )
 
 // Defaults.
@@ -147,6 +152,17 @@ const (
 	// ProviderHetzner is the hetzner (Hetzner Cloud) infrastructure provider's
 	// name, as clusterctl and --provider know it.
 	ProviderHetzner = "hetzner"
+	// DefaultVSphereVersion is the upstream Cluster API provider for vSphere
+	// (CAPV) release klotho installs for the vsphere provider. CAPV is in
+	// clusterctl's built-in provider list, so no fetchURL is required for the
+	// stock provider; klotho's flat single-node template is read from a local
+	// override (providers.vsphere.fetchURL) since the released provider ships a
+	// multi-node CPI/CSI template. The v1.x series exposes the govmomi-mode CRDs
+	// as infrastructure.cluster.x-k8s.io/v1beta2. VERIFY against a live run.
+	DefaultVSphereVersion = "v1.13.0"
+	// ProviderVSphere is the vsphere infrastructure provider's name, as
+	// clusterctl and --provider know it.
+	ProviderVSphere = "vsphere"
 	// FileName is the configuration file's name inside the config directory.
 	FileName = "config.yaml"
 	// IdentityFileName is the default age identity file's name inside the
@@ -197,6 +213,7 @@ type Config struct {
 	Hyperv            Hyperv     `json:"hyperv,omitempty"`
 	Libvirt           Libvirt    `json:"libvirt,omitempty"`
 	VZ                VZ         `json:"vz,omitempty"`
+	VSphere           VSphere    `json:"vsphere,omitempty"`
 	CAPI              CAPI       `json:"capi,omitempty"`
 	// K0smotron configures the k0smotron bootstrap and control-plane providers
 	// installed for --control-plane k0s. Empty fields use built-in defaults.
@@ -695,6 +712,56 @@ type Proxmox struct {
 	// field is optional; the zero value is fully defaulted. Use `klotho delete
 	// --watch` to sweep in-process instead of launching a sidecar.
 	Sidecar ProxmoxSidecar `json:"sidecar,omitempty"`
+}
+
+// VSphere holds the vCenter connection and placement settings for the vsphere
+// (Cluster API provider for vSphere, CAPV) provider. klotho reaches vCenter
+// directly over the govmomi SDK; the in-cluster controller uses a per-cluster
+// identity Secret built from username/password.
+type VSphere struct {
+	// Server is the vCenter host or URL klotho dials, for example
+	// "vcenter.example.com" or "https://vcenter.example.com/sdk". Empty means the
+	// VSPHERE_SERVER variable. Required.
+	Server string `json:"server,omitempty"`
+	// Username and Password authenticate the govmomi session and the in-cluster
+	// identity Secret. They come from the environment (VSPHERE_USERNAME,
+	// VSPHERE_PASSWORD) too; the password is never written back to disk.
+	Username string `json:"username,omitempty"`
+	Password string `json:"password,omitempty"`
+	// Thumbprint is the colon-separated SHA-1 of the vCenter host certificate
+	// (VSPHERE_TLS_THUMBPRINT). Empty with Insecure true skips verification.
+	Thumbprint string `json:"thumbprint,omitempty"`
+	// Insecure skips vCenter TLS verification for klotho's own session.
+	Insecure bool `json:"insecure,omitempty"`
+	// Datacenter, Datastore, Folder, ResourcePool and Network place the clone.
+	// Empty fields fall back to the matching VSPHERE_* variable, then the
+	// datacenter defaults.
+	Datacenter   string `json:"datacenter,omitempty"`
+	Datastore    string `json:"datastore,omitempty"`
+	Folder       string `json:"folder,omitempty"`
+	ResourcePool string `json:"resourcePool,omitempty"`
+	Network      string `json:"network,omitempty"`
+	// Template is the name (or inventory path) of the VM template to clone. Empty
+	// means the VSPHERE_TEMPLATE variable. Required.
+	Template string `json:"template,omitempty"`
+	// CloneMode is "fullClone" (the default) or "linkedClone".
+	CloneMode string `json:"cloneMode,omitempty"`
+	// NumCPUs, MemoryMiB and DiskGiB size the bootstrap VM. Zero means 2, 8192
+	// and the template's disk size.
+	NumCPUs   int `json:"numCPUs,omitempty"`
+	MemoryMiB int `json:"memoryMiB,omitempty"`
+	DiskGiB   int `json:"diskGiB,omitempty"`
+	// EndpointIP is the static control plane VIP kube-vip holds (vSphere has no
+	// load balancer). Empty means the CONTROL_PLANE_ENDPOINT_IP variable.
+	EndpointIP string `json:"endpointIP,omitempty"`
+	// Port is the API server port. Zero means 6443.
+	Port int `json:"port,omitempty"`
+	// VIPInterface names the NIC kube-vip binds the VIP on. Empty lets kube-vip
+	// auto-detect.
+	VIPInterface string `json:"vipInterface,omitempty"`
+	// SSHAuthorizedKey is installed for the template's default user so a failed
+	// bootstrap can be diagnosed (VSPHERE_SSH_AUTHORIZED_KEY). Optional.
+	SSHAuthorizedKey string `json:"sshAuthorizedKey,omitempty"`
 }
 
 // ProxmoxSidecar tunes the deletion sidecar. See proxmox.SidecarConfig.
@@ -1401,6 +1468,16 @@ func (c *Config) applyEnv() error {
 			c.VZ.Token = v
 		}
 	}
+	if c.VSphere.Username == "" {
+		if v, ok := os.LookupEnv(EnvVSphereUsername); ok && v != "" {
+			c.VSphere.Username = v
+		}
+	}
+	if c.VSphere.Password == "" {
+		if v, ok := os.LookupEnv(EnvVSpherePassword); ok && v != "" {
+			c.VSphere.Password = v
+		}
+	}
 	return nil
 }
 
@@ -1471,6 +1548,11 @@ func (c *Config) applyDefaults() {
 		vzp.Version = DefaultVZVersion
 	}
 	c.Providers[ProviderVZ] = vzp
+	vsp := c.Providers[ProviderVSphere]
+	if vsp.Version == "" {
+		vsp.Version = DefaultVSphereVersion
+	}
+	c.Providers[ProviderVSphere] = vsp
 	if c.Variables == nil {
 		c.Variables = map[string]string{}
 	}
@@ -1761,6 +1843,17 @@ const Skeleton = `# klotho configuration. Every field is optional; see "klotho -
 #   host: localhost            # recorded in providerID vz://<host>/<vmid>
 #   image: /opt/images/ubuntu-24.04-arm64.raw   # a raw arm64 cloud image on the Mac
 #   endpointHost: 192.168.64.10            # node zero's address (no load balancer)
+# vsphere:                      # VMware vCenter (Cluster API provider for vSphere, CAPV)
+#   server: vcenter.example.com   # or https://vcenter.example.com/sdk
+#   # username: set VSPHERE_USERNAME; password: set VSPHERE_PASSWORD (never store it here)
+#   thumbprint: "AA:BB:CC:..."    # SHA-1 of the vCenter cert; or insecure: true (dev only)
+#   datacenter: dc1
+#   datastore: datastore1
+#   folder: klotho               # a VM folder; empty = datacenter default
+#   resourcePool: "*/Resources"  # empty = datacenter default
+#   network: "VM Network"
+#   template: ubuntu-2404-template   # a cloud-init + VMware guestinfo enabled VM template
+#   endpointIP: 192.168.1.200    # the static control-plane VIP kube-vip holds (no load balancer)
 # providers:
 #   proxmox:
 #     version: v0.9.2
@@ -1776,6 +1869,13 @@ const Skeleton = `# klotho configuration. Every field is optional; see "klotho -
 #     version: v0.1.0
 #     # vz is not in clusterctl's built-in list, so point these at its release:
 #     # fetchURL: https://github.com/klotho-k8s/cluster-api-provider-vz/releases/<version>/infrastructure-components.yaml
+#   vsphere:
+#     version: v1.13.0
+#     # CAPV is in clusterctl's built-in list, but its released template is multi-node CPI/CSI.
+#     # Point fetchURL at a local clusterctl repo carrying klotho's flat single-node template,
+#     # and componentsURL at the real CAPV release the in-cluster operator installs:
+#     # fetchURL: file:///path/to/local-capv-repo/infrastructure-vsphere/v1.13.0/infrastructure-components.yaml
+#     # componentsURL: https://github.com/kubernetes-sigs/cluster-api-provider-vsphere/releases/download/v1.13.0/infrastructure-components.yaml
 # variables:
 #   CONTROL_PLANE_ENDPOINT_IP: 10.0.0.10
 # hooks:                       # your own actions against the booted cluster; klotho installs nothing
