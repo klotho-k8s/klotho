@@ -104,7 +104,7 @@ var _ infrastructure.Provider = (*Provider)(nil)
 var _ provider.Checker = (*Provider)(nil)
 
 // API is the subset of the godo client klotho uses, so it can be faked in
-// tests. *Client (built by NewClient) satisfies it.
+// tests. The client returned by NewClient satisfies it.
 type API interface {
 	CreateDroplet(ctx context.Context, req *godo.DropletCreateRequest) (*godo.Droplet, error)
 	GetDroplet(ctx context.Context, id int) (*godo.Droplet, error)

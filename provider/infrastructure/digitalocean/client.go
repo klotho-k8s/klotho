@@ -8,37 +8,38 @@ import (
 	"github.com/digitalocean/godo"
 )
 
-// Client wraps the godo client to satisfy API, paginating the list calls and
+// client wraps the godo client to satisfy API, paginating the list calls and
 // reducing godo's call surface to the plain methods klotho uses.
-type Client struct {
+type client struct {
 	godo *godo.Client
 }
 
 // NewClient builds a DigitalOcean client authenticated with the configured
-// token. It makes no API calls.
-func NewClient(cfg Config) (*Client, error) {
+// token. It returns the API klotho uses (an unexported *client) and makes no API
+// calls.
+func NewClient(cfg Config) (API, error) {
 	if cfg.Token == "" {
 		return nil, errorf("a DigitalOcean API token is required (set DIGITALOCEAN_TOKEN)")
 	}
-	return &Client{godo: godo.NewFromToken(cfg.Token)}, nil
+	return &client{godo: godo.NewFromToken(cfg.Token)}, nil
 }
 
-func (c *Client) CreateDroplet(ctx context.Context, req *godo.DropletCreateRequest) (*godo.Droplet, error) {
+func (c *client) CreateDroplet(ctx context.Context, req *godo.DropletCreateRequest) (*godo.Droplet, error) {
 	d, _, err := c.godo.Droplets.Create(ctx, req)
 	return d, err
 }
 
-func (c *Client) GetDroplet(ctx context.Context, id int) (*godo.Droplet, error) {
+func (c *client) GetDroplet(ctx context.Context, id int) (*godo.Droplet, error) {
 	d, _, err := c.godo.Droplets.Get(ctx, id)
 	return d, err
 }
 
-func (c *Client) DeleteDroplet(ctx context.Context, id int) error {
+func (c *client) DeleteDroplet(ctx context.Context, id int) error {
 	_, err := c.godo.Droplets.Delete(ctx, id)
 	return err
 }
 
-func (c *Client) ListDropletsByTag(ctx context.Context, tag string) ([]godo.Droplet, error) {
+func (c *client) ListDropletsByTag(ctx context.Context, tag string) ([]godo.Droplet, error) {
 	var out []godo.Droplet
 	opt := &godo.ListOptions{Page: 1, PerPage: 200}
 	for {
@@ -58,22 +59,22 @@ func (c *Client) ListDropletsByTag(ctx context.Context, tag string) ([]godo.Drop
 	}
 }
 
-func (c *Client) CreateLoadBalancer(ctx context.Context, req *godo.LoadBalancerRequest) (*godo.LoadBalancer, error) {
+func (c *client) CreateLoadBalancer(ctx context.Context, req *godo.LoadBalancerRequest) (*godo.LoadBalancer, error) {
 	lb, _, err := c.godo.LoadBalancers.Create(ctx, req)
 	return lb, err
 }
 
-func (c *Client) GetLoadBalancer(ctx context.Context, id string) (*godo.LoadBalancer, error) {
+func (c *client) GetLoadBalancer(ctx context.Context, id string) (*godo.LoadBalancer, error) {
 	lb, _, err := c.godo.LoadBalancers.Get(ctx, id)
 	return lb, err
 }
 
-func (c *Client) DeleteLoadBalancer(ctx context.Context, id string) error {
+func (c *client) DeleteLoadBalancer(ctx context.Context, id string) error {
 	_, err := c.godo.LoadBalancers.Delete(ctx, id)
 	return err
 }
 
-func (c *Client) ListRegions(ctx context.Context) ([]godo.Region, error) {
+func (c *client) ListRegions(ctx context.Context) ([]godo.Region, error) {
 	var out []godo.Region
 	opt := &godo.ListOptions{Page: 1, PerPage: 200}
 	for {
@@ -93,7 +94,7 @@ func (c *Client) ListRegions(ctx context.Context) ([]godo.Region, error) {
 	}
 }
 
-func (c *Client) ListSizes(ctx context.Context) ([]godo.Size, error) {
+func (c *client) ListSizes(ctx context.Context) ([]godo.Size, error) {
 	var out []godo.Size
 	opt := &godo.ListOptions{Page: 1, PerPage: 200}
 	for {
@@ -113,7 +114,7 @@ func (c *Client) ListSizes(ctx context.Context) ([]godo.Size, error) {
 	}
 }
 
-func (c *Client) ListImages(ctx context.Context) ([]godo.Image, error) {
+func (c *client) ListImages(ctx context.Context) ([]godo.Image, error) {
 	var out []godo.Image
 	opt := &godo.ListOptions{Page: 1, PerPage: 200}
 	for {
@@ -133,7 +134,7 @@ func (c *Client) ListImages(ctx context.Context) ([]godo.Image, error) {
 	}
 }
 
-func (c *Client) GetImageBySlug(ctx context.Context, slug string) (*godo.Image, error) {
+func (c *client) GetImageBySlug(ctx context.Context, slug string) (*godo.Image, error) {
 	img, _, err := c.godo.Images.GetBySlug(ctx, slug)
 	return img, err
 }
