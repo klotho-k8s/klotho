@@ -57,6 +57,12 @@ const (
 	EnvProxmoxInsecure = "KLOTHO_PROXMOX_INSECURE"
 	EnvS3AccessKeyID   = "KLOTHO_S3_ACCESS_KEY_ID"
 	EnvS3SecretKey     = "KLOTHO_S3_SECRET_ACCESS_KEY"
+	// EnvVaultAddr and EnvVaultToken are the standard Vault environment
+	// variables. They supply the vault state backend's address and token; the
+	// token is never accepted from or written to the config file.
+	EnvVaultAddr      = "VAULT_ADDR"
+	EnvVaultToken     = "VAULT_TOKEN"
+	EnvVaultNamespace = "VAULT_NAMESPACE"
 	EnvLinodeToken     = "LINODE_TOKEN"
 	// EnvDOToken is the DigitalOcean API token; it sets digitalocean.token when
 	// that is unset. klotho never writes it back to disk.
@@ -205,6 +211,7 @@ const (
 	BackendFile    = "file"
 	BackendProxmox = "proxmox"
 	BackendS3      = "s3"
+	BackendVault   = "vault"
 )
 
 // Payload host kinds.
@@ -218,9 +225,10 @@ const DefaultPresignTTL = time.Hour
 
 // Config is the merged configuration.
 type Config struct {
-	// Backend is "proxmox", "file" or "s3". Empty means the infrastructure
-	// provider's native store when it has one and is configured, else file;
-	// see EffectiveBackend. "s3" is never inferred and must be set explicitly.
+	// Backend is "proxmox", "file", "s3" or "vault". Empty means the
+	// infrastructure provider's native store when it has one and is configured,
+	// else file; see EffectiveBackend. "s3" and "vault" are never inferred and
+	// must be set explicitly.
 	Backend string `json:"backend,omitempty"`
 	// Payload configures the host that serves files too large for a
 	// provider's user-data channel. Unset means none.
@@ -230,6 +238,9 @@ type Config struct {
 	// S3Backend configures the s3 state backend. It is used only when the
 	// effective backend is "s3".
 	S3Backend S3Backend `json:"s3,omitempty"`
+	// VaultBackend configures the vault state backend. It is used only when the
+	// effective backend is "vault".
+	VaultBackend VaultBackend `json:"vault,omitempty"`
 	// SSHAuthorizedKeys are installed for the bootstrap node's default user.
 	SSHAuthorizedKeys []string     `json:"sshAuthorizedKeys,omitempty"`
 	Encryption        Encryption   `json:"encryption,omitempty"`
@@ -1126,6 +1137,44 @@ func (s S3Backend) problems() []string {
 	return problems
 }
 
+// VaultBackend configures the vault state backend: a HashiCorp Vault KV v2
+// secrets engine. The backend stores each cluster's already-sealed state record
+// as one secret; it never holds a plaintext state or an encryption key. The
+// Vault token is not stored here — it comes from the environment (VAULT_TOKEN)
+// and is never written back to disk.
+type VaultBackend struct {
+	// Address is the Vault server URL, e.g. https://vault.example:8200. Empty
+	// means the VAULT_ADDR environment variable (then the SDK default).
+	Address string `json:"address,omitempty"`
+	// Token is the Vault token. It comes only from the environment (VAULT_TOKEN),
+	// is never accepted from or written to the config file.
+	Token string `json:"-"`
+	// Mount is the path the KV v2 engine is mounted at; empty means "secret".
+	Mount string `json:"mount,omitempty"`
+	// Prefix is a path prefix below the mount under which every record is stored.
+	Prefix string `json:"prefix,omitempty"`
+	// Namespace is the Vault Enterprise / HCP namespace, if any. It comes from
+	// VAULT_NAMESPACE too.
+	Namespace string `json:"namespace,omitempty"`
+	// Insecure skips TLS verification when dialing Vault. Development only.
+	Insecure bool `json:"insecure,omitempty"`
+}
+
+// problems lists what is wrong with a vault backend section.
+func (v VaultBackend) problems() []string {
+	var problems []string
+	addr := v.Address
+	if addr == "" {
+		addr = os.Getenv(EnvVaultAddr)
+	}
+	if addr == "" {
+		problems = append(problems, fmt.Sprintf("vault.address is required when backend is vault (or set %s)", EnvVaultAddr))
+	} else if u, err := url.Parse(addr); err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		problems = append(problems, fmt.Sprintf("vault.address %q must be an http(s) URL", addr))
+	}
+	return problems
+}
+
 // CAPI configures the Cluster API core, bootstrap and control plane
 // providers the operator installs, and the bootstrap node's add-ons.
 type CAPI struct {
@@ -1628,6 +1677,19 @@ func (c *Config) applyEnv() error {
 		c.Payload.S3.SecretAccessKey = v
 		c.S3Backend.SecretAccessKey = v
 	}
+	if v, ok := os.LookupEnv(EnvVaultToken); ok && v != "" {
+		c.VaultBackend.Token = v
+	}
+	if c.VaultBackend.Address == "" {
+		if v, ok := os.LookupEnv(EnvVaultAddr); ok && v != "" {
+			c.VaultBackend.Address = v
+		}
+	}
+	if c.VaultBackend.Namespace == "" {
+		if v, ok := os.LookupEnv(EnvVaultNamespace); ok && v != "" {
+			c.VaultBackend.Namespace = v
+		}
+	}
 	if v, ok := os.LookupEnv(EnvLinodeToken); ok && v != "" {
 		c.Linode.Token = v
 	}
@@ -1778,8 +1840,10 @@ func (c *Config) Validate() error {
 	case "", BackendFile, BackendProxmox:
 	case BackendS3:
 		problems = append(problems, c.S3Backend.problems()...)
+	case BackendVault:
+		problems = append(problems, c.VaultBackend.problems()...)
 	default:
-		problems = append(problems, fmt.Sprintf("backend %q is not one of %s, %s, %s", c.Backend, BackendProxmox, BackendFile, BackendS3))
+		problems = append(problems, fmt.Sprintf("backend %q is not one of %s, %s, %s, %s", c.Backend, BackendProxmox, BackendFile, BackendS3, BackendVault))
 	}
 	switch c.Payload.Kind {
 	case "":

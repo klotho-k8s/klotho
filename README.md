@@ -66,6 +66,14 @@ It is skipped unless asked for:
 KLOTHO_E2E_S3=1 go test ./provider/payload/s3/ -run E2E -v
 ```
 
+The Vault state backend has an end-to-end test that boots a dev-mode Vault
+(`vault server -dev`, no container). It is skipped unless asked for and unless a
+`vault` binary is on PATH:
+
+```sh
+KLOTHO_E2E_VAULT=1 go test ./provider/backend/vault/ -run E2E -v
+```
+
 ## Configuration
 
 klotho reads `$XDG_CONFIG_HOME/klotho/config.yaml` (`~/.config/klotho/config.yaml`),
@@ -213,6 +221,11 @@ the code:
 
 - `provider/backend/proxmox/README.md`: why cluster state is kept in the
   comment of an empty Proxmox resource pool, what was rejected, and the limits.
+- `provider/backend/s3/README.md`: the S3-compatible state backend, one sealed
+  record per object, and how `Reserve` stays atomic with conditional writes.
+- `provider/backend/vault/README.md`: the HashiCorp Vault KV v2 state backend,
+  the `data/`/`metadata/` path split, and how `Reserve` and `Save` use
+  check-and-set for atomicity.
 - `provider/payload/host.go`: why a payload host exists, how large klotho's
   user-data actually is, which providers' user-data caps it exceeds, and how
   to measure your own. The S3 host is implemented and tested; the create
