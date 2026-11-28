@@ -32,7 +32,7 @@ func isolate(t *testing.T) string {
 	for _, e := range []string{"KLOTHO_BACKEND", "KLOTHO_CONFIG", "KLOTHO_PROFILE",
 		config.EnvStateDir, config.EnvIdentityFile, config.EnvRecipients,
 		config.EnvProxmoxURL, config.EnvProxmoxTokenID, config.EnvProxmoxSecret, config.EnvProxmoxInsecure,
-		config.EnvLinodeToken} {
+		config.EnvLinodeToken, config.EnvHetznerToken} {
 		t.Setenv(e, "")
 	}
 	return dir
@@ -419,6 +419,34 @@ func TestProviderSecretDataGCP(t *testing.T) {
 	a2 := &app{cfg: &config.Config{}}
 	if d := a2.providerSecretData(providerGCP); d != nil {
 		t.Fatalf("providerSecretData(gcp) with no creds = %v, want nil", d)
+	}
+}
+
+func TestCreateAdmitsHetznerButNeedsToken(t *testing.T) {
+	isolate(t)
+	run(t, "", "init")
+	// hetzner is a known provider (it passes the create guard), but with no
+	// HCLOUD_TOKEN the provider cannot be built, so the error is about the token,
+	// not ErrNotImplemented.
+	r := run(t, "", "create", "demo", "--provider", "hetzner")
+	if errors.Is(r.runErr, ErrNotImplemented) {
+		t.Fatalf("hetzner should be an admitted provider, got %v", r.runErr)
+	}
+	if r.runErr == nil || !strings.Contains(r.runErr.Error(), "HCLOUD_TOKEN") {
+		t.Fatalf("want a missing-token error, got %v", r.runErr)
+	}
+}
+
+func TestProviderSecretDataHetzner(t *testing.T) {
+	a := &app{cfg: &config.Config{Hetzner: config.Hetzner{Token: "tok-xyz"}}}
+	data := a.providerSecretData(providerHetzner)
+	if data["HCLOUD_TOKEN"] != "tok-xyz" {
+		t.Fatalf("providerSecretData(hetzner) = %v, want HCLOUD_TOKEN=tok-xyz", data)
+	}
+	// With no token, nothing is emitted.
+	a2 := &app{cfg: &config.Config{}}
+	if d := a2.providerSecretData(providerHetzner); d != nil {
+		t.Fatalf("providerSecretData(hetzner) with no token = %v, want nil", d)
 	}
 }
 

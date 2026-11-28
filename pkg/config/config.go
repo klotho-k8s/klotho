@@ -69,6 +69,9 @@ const (
 	// EnvVZToken is the capvz-daemon bearer token; it sets vz.token when that is
 	// unset. klotho never writes it back to disk.
 	EnvVZToken = "KLOTHO_VZ_TOKEN"
+	// EnvHetznerToken is the Hetzner Cloud API token; it sets hetzner.token when
+	// that is unset. klotho never writes it back to disk.
+	EnvHetznerToken = "HCLOUD_TOKEN"
 )
 
 // Defaults.
@@ -135,6 +138,15 @@ const (
 	// ProviderVZ is the vz (Apple Virtualization.framework) infrastructure
 	// provider's name, as clusterctl and --provider know it.
 	ProviderVZ = "vz"
+	// DefaultHetznerVersion is the Cluster API Provider Hetzner (CAPH) release
+	// installed for the hetzner provider. CAPH's infrastructure CRDs are
+	// infrastructure.cluster.x-k8s.io/v1beta1; the flat cluster template authors
+	// the CAPI-core objects in the v1beta2 contract klotho requires. VERIFY the
+	// release and the contract compatibility against a live run.
+	DefaultHetznerVersion = "v1.1.13"
+	// ProviderHetzner is the hetzner (Hetzner Cloud) infrastructure provider's
+	// name, as clusterctl and --provider know it.
+	ProviderHetzner = "hetzner"
 	// FileName is the configuration file's name inside the config directory.
 	FileName = "config.yaml"
 	// IdentityFileName is the default age identity file's name inside the
@@ -179,6 +191,7 @@ type Config struct {
 	AWS               AWS        `json:"aws,omitempty"`
 	Linode            Linode     `json:"linode,omitempty"`
 	GCP               GCP        `json:"gcp,omitempty"`
+	Hetzner           Hetzner    `json:"hetzner,omitempty"`
 	Azure             Azure      `json:"azure,omitempty"`
 	Docker            Docker     `json:"docker,omitempty"`
 	Hyperv            Hyperv     `json:"hyperv,omitempty"`
@@ -361,6 +374,40 @@ type GCP struct {
 	// in-cluster controller has no credential unless ADC resolves one it can
 	// read). It is read from GOOGLE_APPLICATION_CREDENTIALS when unset.
 	CredentialsFile string `json:"credentialsFile,omitempty"`
+}
+
+// Hetzner holds the Hetzner Cloud connection and placement settings for the
+// hetzner (CAPH) provider. The API token is not stored here; it comes from the
+// environment (HCLOUD_TOKEN) and is never written back to disk.
+type Hetzner struct {
+	// Token is the Hetzner Cloud API token. It comes only from the environment
+	// (HCLOUD_TOKEN), is never accepted from or written to the config file, and
+	// is handed to the in-cluster CAPH controller as its credential.
+	Token string `json:"-"`
+	// Location is the Hetzner location the bootstrap server is placed in and the
+	// cluster's control-plane region, e.g. "fsn1", "nbg1", "hel1", "ash", "hil",
+	// "sin". Required for the hetzner provider.
+	Location string `json:"location,omitempty"`
+	// ServerType sizes the bootstrap server (and the template's machines); empty
+	// means cpx21, the smallest type that clears kubeadm's two-CPU control-plane
+	// preflight and is available in every location.
+	ServerType string `json:"serverType,omitempty"`
+	// Image is the bootstrap image name; empty means ubuntu-22.04 (a plain image,
+	// so install-at-boot is needed).
+	Image string `json:"image,omitempty"`
+	// SSHKeys are the names of SSH keys that already exist in the Hetzner project.
+	// At least one is required (CAPH requires an SSH key, and it is the only way
+	// into a node to diagnose a failed bootstrap).
+	SSHKeys []string `json:"sshKeys,omitempty"`
+	// Labels are extra Hetzner labels added to the bootstrap server.
+	Labels map[string]string `json:"labels,omitempty"`
+	// ControlPlaneEndpoint is the API server host. Required: klotho mints
+	// certificates and node zero's cloud-init before the node boots, and the flat
+	// template disables CAPH's load balancer. The cheapest choice is a DNS name
+	// you control, pointed at node zero after it boots.
+	ControlPlaneEndpoint string `json:"controlPlaneEndpoint,omitempty"`
+	// Port is the API server port; zero means 6443.
+	Port int `json:"port,omitempty"`
 }
 
 // Azure holds the Azure connection and placement settings for the azure (CAPZ)
@@ -1333,6 +1380,9 @@ func (c *Config) applyEnv() error {
 	if v, ok := os.LookupEnv(EnvLinodeToken); ok && v != "" {
 		c.Linode.Token = v
 	}
+	if v, ok := os.LookupEnv(EnvHetznerToken); ok && v != "" {
+		c.Hetzner.Token = v
+	}
 	if c.GCP.CredentialsFile == "" {
 		if v, ok := os.LookupEnv(EnvGCPCredentials); ok && v != "" {
 			c.GCP.CredentialsFile = v
@@ -1394,6 +1444,11 @@ func (c *Config) applyDefaults() {
 	}
 	c.Providers[ProviderGCP] = gcp
 	c.GCP.CredentialsFile = Expand(c.GCP.CredentialsFile)
+	hetzner := c.Providers[ProviderHetzner]
+	if hetzner.Version == "" {
+		hetzner.Version = DefaultHetznerVersion
+	}
+	c.Providers[ProviderHetzner] = hetzner
 	azure := c.Providers[ProviderAzure]
 	if azure.Version == "" {
 		azure.Version = DefaultAzureVersion

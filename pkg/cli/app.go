@@ -30,6 +30,7 @@ import (
 	azureprovider "github.com/klotho-k8s/klotho/provider/infrastructure/azure"
 	dockerprovider "github.com/klotho-k8s/klotho/provider/infrastructure/docker"
 	gcpprovider "github.com/klotho-k8s/klotho/provider/infrastructure/gcp"
+	hetznerprovider "github.com/klotho-k8s/klotho/provider/infrastructure/hetzner"
 	hypervprovider "github.com/klotho-k8s/klotho/provider/infrastructure/hyperv"
 	libvirtprovider "github.com/klotho-k8s/klotho/provider/infrastructure/libvirt"
 	linodeprovider "github.com/klotho-k8s/klotho/provider/infrastructure/linode"
@@ -45,6 +46,7 @@ const (
 	providerAWS     = "aws"
 	providerLinode  = "linode"
 	providerGCP     = "gcp"
+	providerHetzner = "hetzner"
 	providerAzure   = "azure"
 	providerDocker  = "docker"
 	providerHyperv  = "hyperv"
@@ -425,6 +427,23 @@ func (a *app) infra(provider string) (infrastructure.Provider, error) {
 			return nil, err
 		}
 		return gcpInfra{gcpprovider.New(client, gc)}, nil
+	case providerHetzner:
+		h := a.cfg.Hetzner
+		hc := hetznerprovider.Config{
+			Token:                h.Token,
+			Location:             h.Location,
+			ServerType:           h.ServerType,
+			Image:                h.Image,
+			SSHKeys:              h.SSHKeys,
+			Labels:               h.Labels,
+			ControlPlaneEndpoint: h.ControlPlaneEndpoint,
+			Port:                 h.Port,
+		}
+		client, err := hetznerprovider.NewClient(hc)
+		if err != nil {
+			return nil, err
+		}
+		return hetznerInfra{hetznerprovider.New(client, hc)}, nil
 	case providerAzure:
 		az := a.cfg.Azure
 		ac := azureprovider.Config{
@@ -504,7 +523,7 @@ func (a *app) infra(provider string) (infrastructure.Provider, error) {
 			EndpointHost: v.EndpointHost,
 		})}, nil
 	default:
-		return nil, fmt.Errorf("infrastructure provider %q: %w (available: %s, %s, %s, %s, %s, %s, %s, %s, %s)", provider, ErrNotImplemented, providerProxmox, providerDocker, providerAWS, providerLinode, providerGCP, providerAzure, providerHyperv, providerLibvirt, providerVZ)
+		return nil, fmt.Errorf("infrastructure provider %q: %w (available: %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", provider, ErrNotImplemented, providerProxmox, providerDocker, providerAWS, providerLinode, providerGCP, providerHetzner, providerAzure, providerHyperv, providerLibvirt, providerVZ)
 	}
 }
 
@@ -550,6 +569,10 @@ func (a *app) providerSecretData(provider string) map[string]string {
 	case providerLinode:
 		if t := a.cfg.Linode.Token; t != "" {
 			return map[string]string{"LINODE_TOKEN": t}
+		}
+	case providerHetzner:
+		if t := a.cfg.Hetzner.Token; t != "" {
+			return map[string]string{"HCLOUD_TOKEN": t}
 		}
 	case providerGCP:
 		if f := a.cfg.GCP.CredentialsFile; f != "" {
@@ -645,6 +668,11 @@ type gcpInfra struct{ *gcpprovider.Provider }
 
 func (gcpInfra) Tag(cluster string) string { return gcpprovider.Tag(cluster) }
 
+// hetznerInfra adds the provider's label convention to the Hetzner provider.
+type hetznerInfra struct{ *hetznerprovider.Provider }
+
+func (hetznerInfra) Tag(cluster string) string { return hetznerprovider.Tag(cluster) }
+
 // azureInfra adds the provider's tag convention to the Azure provider.
 type azureInfra struct{ *azureprovider.Provider }
 
@@ -704,6 +732,7 @@ var (
 	_ klotho.Tagger = awsInfra{}
 	_ klotho.Tagger = linodeInfra{}
 	_ klotho.Tagger = gcpInfra{}
+	_ klotho.Tagger = hetznerInfra{}
 	_ klotho.Tagger = azureInfra{}
 	_ klotho.Tagger = hypervInfra{}
 	_ klotho.Tagger = libvirtInfra{}
@@ -723,6 +752,7 @@ var (
 	_ infrastructure.Provider      = awsInfra{}
 	_ infrastructure.Provider      = linodeInfra{}
 	_ infrastructure.Provider      = gcpInfra{}
+	_ infrastructure.Provider      = hetznerInfra{}
 	_ infrastructure.Provider      = azureInfra{}
 	_ infrastructure.Provider      = hypervInfra{}
 	_ infrastructure.Provider      = libvirtInfra{}
