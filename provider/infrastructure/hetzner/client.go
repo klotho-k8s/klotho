@@ -60,7 +60,7 @@ func (a hcloudAPI) GetServerType(ctx context.Context, name string) (*hcloud.Serv
 }
 
 func (a hcloudAPI) GetImage(ctx context.Context, name string) (*hcloud.Image, error) {
-	img, _, err := a.c.Image.GetByName(ctx, name)
+	img, _, err := a.c.Image.GetByNameAndArchitecture(ctx, name, hcloud.ArchitectureX86)
 	return img, err
 }
 
