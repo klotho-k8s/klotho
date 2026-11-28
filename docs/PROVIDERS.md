@@ -124,9 +124,18 @@ load balancer, so the endpoint is node zero's own address (`CONTROL_PLANE_ENDPOI
 and `providerID` is `libvirt://<host>/<domain-uuid>`. Because libvirtd is reachable from
 outside, teardown is the clean external finisher — klotho's own `Teardown` destroys and
 undefines the domains and deletes the overlay/cidata volumes (the base image is untouched),
-so no deletion sidecar is needed. Build + unit green; **not run live here** (no libvirtd in
-the dev environment). See `provider/infrastructure/libvirt/TESTING.md` for a WSL2 nested-KVM
-runbook and a remote `qemu+tls` (Proxmox Linux VM) alternative.
+so no deletion sidecar is needed. Build + unit green, and **run live on real KVM**: in WSL2
+`libvirtd` is the active systemd system daemon, `virsh` is 12.0.0, `/dev/kvm` is present, and
+the invoking user is in the `libvirt` group, so `qemu:///system` works without sudo. A live
+klotho run booted node zero on KVM and brought the full CAPI stack — including the in-cluster
+libvirt infrastructure controller — to Ready and adopted the `LibvirtCluster`; the controller
+is exercised live, and a full create → pivot → delete on the latest template is being
+re-verified. Working connection details for reproducibility: the klotho CLI dials
+`qemu:///system`, the in-cluster controller dials `qemu+tcp://192.168.122.1/system` (the
+libvirt NAT bridge gateway, reachable from pods), and the pod CIDR **must** be `10.244.0.0/16`
+— the default pod CIDR overlaps the libvirt `192.168.122.0/24` subnet and breaks pod
+networking. See `provider/infrastructure/libvirt/TESTING.md` for a WSL2 nested-KVM runbook and
+a remote `qemu+tls` (Proxmox Linux VM) alternative.
 
 ### Apple Virtualization (CAPVZ) — experimental
 See [cluster-api-provider-vz](https://github.com/klotho-k8s/cluster-api-provider-vz). A

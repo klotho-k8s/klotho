@@ -343,6 +343,9 @@ type fakeCluster struct {
 	nodeRef    bool // the Machine reports a node once owned and unpaused
 	patches    []string
 	applied    []string
+	// applyFail, keyed by object Kind, makes Apply return the mapped error for
+	// that kind on every attempt, standing in for a server-side rejection.
+	applyFail map[string]error
 }
 
 func newFakeCluster(rec *recorder, clusterName string) *fakeCluster {
@@ -381,6 +384,10 @@ func (f *fakeCluster) Apply(_ context.Context, manager string, obj *unstructured
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	o := obj.DeepCopy()
+	if err := f.applyFail[o.GetKind()]; err != nil {
+		f.rec.add("kube.Apply %s %s %s rejected", manager, o.GetKind(), o.GetName())
+		return err
+	}
 	desc := fmt.Sprintf("kube.Apply %s %s %s", manager, o.GetKind(), o.GetName())
 	if manager == PauseFieldManager {
 		p, _, _ := unstructured.NestedBool(o.Object, "spec", "paused")
