@@ -11,6 +11,13 @@ ordering, and the rollout waits.
 The version bump is identical across infrastructure providers, so there is one
 upgrade command for all of them.
 
+`klotho upgrade` also performs a day-2 upgrade of the **Cluster API components
+themselves** (the controllers, CRDs and webhooks) through `--capi-version`,
+`--provider-version` and the matching image flags — see
+[Upgrading the Cluster API components](#upgrading-the-cluster-api-components-the-controllers-themselves)
+below. The two are independent; given together, the components upgrade runs
+first.
+
 ## Command
 
     klotho upgrade <cluster> --kubernetes-version v1.33.4 [flags]
@@ -110,9 +117,103 @@ the target kubeadm/kubelet, then
 A fully Proxmox-native template verb is tracked in
 [day-2-operations.md](day-2-operations.md).
 
+## Upgrading the Cluster API components (the controllers themselves)
+
+The same `klotho upgrade` command performs a **day-2 upgrade of the Cluster API
+management plane** — the controllers, CRDs and conversion webhooks — not just
+the workload Kubernetes version. This is independent of `--kubernetes-version`
+and uses its own flags.
+
+### Why it is clean
+
+klotho installs Cluster API through the **Cluster API operator**, which creates
+one `CoreProvider`, one `BootstrapProvider`, one `ControlPlaneProvider` and one
+`InfrastructureProvider` CR. Those CRs are declarative version objects:
+
+- `spec.version` selects the component manifests, the CRDs and the contract;
+- `spec.deployment.containers[].imageUrl` (container `manager`) overrides the
+  controller image.
+
+So a component upgrade is just a re-apply of those CRs at a new version/image:
+the operator re-fetches the manifests, applies the new CRDs and conversion
+webhooks, and rolls the controller deployment. klotho reads the running CRs,
+re-applies each at the target version — **reusing the create-time image lever
+(`pkg/generate.SetManagerImage`) applied day-2** — and waits for each to report
+`Ready`, in the safe order **core → bootstrap → control-plane → infrastructure**.
+
+klotho copies the *running* CR and changes only `spec.version` and, when asked,
+the manager image. It never regenerates the CR from scratch, so the running
+controller's `configSecret` (its infrastructure credential), node affinity,
+tolerations and feature gates are preserved exactly.
+
+### Command
+
+    klotho upgrade <cluster> --capi-version v1.13.0 [flags]
+
+| flag | effect |
+| --- | --- |
+| `--capi-version` | bump the CAPI core **and** the kubeadm bootstrap/control-plane providers together (the CAPI org releases them in lockstep) |
+| `--provider-version` | bump the infrastructure provider |
+| `--operator-version` | bump the Cluster API operator itself (default: leave the operator and cert-manager alone) |
+| `--capi-core-image` | fork/mirror image for the core controller |
+| `--capi-bootstrap-image` | fork/mirror image for the kubeadm bootstrap controller |
+| `--capi-controlplane-image` | fork/mirror image for the kubeadm control-plane controller |
+| `--provider-image` | fork/mirror image for the infrastructure provider controller |
+| `--force` | apply despite blocking findings |
+
+A cluster whose control plane is **k0s/rke2/k3s** carries its own
+bootstrap/control-plane providers from another project, at their own versions.
+`--capi-version` only moves the CAPI-org **kubeadm** providers; it leaves a
+non-kubeadm provider untouched and logs that it did so, so you can bump it
+through its own project's release.
+
+### Guards — reported, never auto-fixed
+
+klotho reports findings and **blocks unless `--force`** (the same
+report-don't-mutate contract as `create` and the Kubernetes-version upgrade).
+Five guards:
+
+1. **Contract compatibility (most important).** If the target core crosses a
+   Cluster API contract boundary (for example v1beta1 → v1beta2) while a
+   dependent provider is *not* bumped alongside it, that provider may still
+   implement the old contract and fail to reconcile. **Blocks.**
+2. **Fork-image pinning (critical).** If a running controller carries an
+   explicit image override — a fork or mirror pin, such as klotho's forked
+   cluster-api (self-hosted ordered-delete) or hardened CAPMOX — and you bump
+   that component's version **without** supplying the matching `--*-image`,
+   klotho refuses. A bare version bump would roll the controller to an image
+   still tagged for the old version, or (if the override were dropped) silently
+   swap in the upstream default and lose the fork's behavior. **Blocks**;
+   `--force` overrides.
+3. **cert-manager floor.** The operator depends on cert-manager for its
+   webhooks. klotho reports the floor the target needs and leaves cert-manager
+   alone by default. **Advisory** (never blocks).
+4. **Skew.** Components step one minor at a time so CRDs and conversion webhooks
+   migrate cleanly; a jump across more than one minor, or a downgrade, is a
+   finding. **Blocks.**
+5. **Self-managed caveat.** Here management == workload: the controllers being
+   upgraded are the ones doing the upgrade, so a bad upgrade can strand
+   reconciliation with no external management cluster to repair from. klotho
+   prints a warning and the recommended backup command
+   (`kubectl get coreprovider,bootstrapprovider,controlplaneprovider,infrastructureprovider,clusters,machines,... -A -o yaml`)
+   before applying. **Advisory.**
+
+### Composition with `--kubernetes-version`
+
+Both may be given in one invocation. When they are, klotho sequences the
+**components first, then the node upgrade**: the newer controllers then manage
+the control-plane and worker rollout. A components-only or a node-only
+invocation runs just that part; an invocation with neither is rejected
+(`nothing to do`).
+
 ## What klotho does not do
 
-It does not upgrade Cluster API itself or the infrastructure provider (those are
-operator `spec.version` patches, also sketched in day-2-operations.md), it does
-not build template images, and it holds no opinion about anything running in the
-cluster.
+It does not build template images, it does not touch cert-manager or install the
+operator's dependencies for you (it reports the cert-manager floor and leaves it
+to you), and it holds no opinion about anything running in the cluster. A
+management-plane upgrade changes only the operator provider CRs; it never edits a
+workload or a user's cluster YAML.
+
+> Live-proof of the management-plane upgrade follows once the CAPD-create path is
+> unblocked (a sibling cert-SAN fix) and there is a running cluster to upgrade;
+> the current bar is a clean build and the unit tests.
