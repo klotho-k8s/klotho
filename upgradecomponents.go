@@ -126,7 +126,7 @@ type componentPlan struct {
 // with no change gets a nil plan. Bootstrap and control-plane take the CAPI-org
 // version only when they are the kubeadm providers; a non-kubeadm (k0s/rke2/k3s)
 // provider is left alone by --capi-version.
-func (cu ComponentUpgrade) plan(lp *liveProviders) []componentPlan {
+func (c ComponentUpgrade) plan(lp *liveProviders) []componentPlan {
 	var plans []componentPlan
 	add := func(live *liveProvider, version, image string, kubeadmOnly bool) {
 		if live == nil {
@@ -147,10 +147,10 @@ func (cu ComponentUpgrade) plan(lp *liveProviders) []componentPlan {
 			plans = append(plans, p)
 		}
 	}
-	add(lp.core, cu.CAPIVersion, cu.CoreImage, false)
-	add(lp.bootstrap, cu.CAPIVersion, cu.BootstrapImage, true)
-	add(lp.controlPlane, cu.CAPIVersion, cu.ControlPlaneImage, true)
-	add(lp.infra, cu.ProviderVersion, cu.ProviderImage, false)
+	add(lp.core, c.CAPIVersion, c.CoreImage, false)
+	add(lp.bootstrap, c.CAPIVersion, c.BootstrapImage, true)
+	add(lp.controlPlane, c.CAPIVersion, c.ControlPlaneImage, true)
+	add(lp.infra, c.ProviderVersion, c.ProviderImage, false)
 	return plans
 }
 
