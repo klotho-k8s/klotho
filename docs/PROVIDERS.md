@@ -45,6 +45,7 @@ inside)
 | Linode | CAPL | by `providerID` | $0 option (NodeBalancer optional) | ✅ | 🟡 live run pending | 🚧 finisher TODO | — |
 | GCP | CAPG | by name | managed LB (forced) | ✅ | 🟡 **help wanted** | 🚧 finisher TODO | — |
 | Hetzner | CAPH | by name (no pre-set id) | $0 option (LB disabled) | ✅ | 🟡 **help wanted** | 🚧 finisher TODO | — |
+| DigitalOcean | CAPDO | by `providerID` | managed LB (forced) | ✅ | 🟡 **help wanted** | 🚧 finisher TODO | — |
 | Azure | CAPZ | by name (pre-set ok) | internal LB (forced) | ✅ | 🟡 **help wanted** | 🚧 finisher TODO | — |
 | Apple `vz` | CAPVZ | by name / `providerID` | node-zero IP | ✅ adapter | 🟡 awaiting Mac run | 🧹 daemon finisher (no deadlock) | macOS / Apple Silicon |
 | vSphere | CAPV | by `providerID` | kube-vip / user-supplied | ✅ | 🟡 **help wanted** | 🧹 govmomi external finisher (no sidecar) | — |
@@ -106,6 +107,20 @@ kubelet `--provider-id=hcloud://<id>` directly. klotho reaches hcloud with the
 official Go SDK ([`hcloud-go`](https://github.com/hetznercloud/hcloud-go)) using an
 `HCLOUD_TOKEN`. Build + unit green; **never run live** (no Hetzner credentials in
 the dev environment). See `provider/infrastructure/hetzner/TESTING.md`.
+
+### DigitalOcean (CAPDO) — help wanted
+Like Linode: klotho **pre-sets** `spec.providerID` (`digitalocean://<droplet-id>`)
+and CAPDO adopts that droplet — CAPDO's only droplet lookup is by the ID parsed
+from `spec.providerID`, and with none set it creates a duplicate, so the pre-set
+ID is load-bearing. Stock CAPDO always fronts the API server with a managed
+DigitalOcean load balancer (an unavoidable ~$12/mo standing cost) and overwrites
+`controlPlaneEndpoint` with its IP; klotho creates that load balancer up front so
+the endpoint is known before cert-minting and injects its UUID
+(`spec.network.apiServerLoadbalancers.resourceId`) so CAPDO adopts it rather than
+provisioning a second. Node zero is tagged with CAPDO's apiserver role tag so the
+load balancer forwards to it. Build + unit green; **never run live** (no
+DigitalOcean credentials in the dev environment). See
+`provider/infrastructure/digitalocean/TESTING.md`.
 
 ### Azure (CAPZ) — help wanted
 Adopts node zero by name; a pre-set `providerID` is fine (CAPL-style). Uses an internal
@@ -183,6 +198,7 @@ If you have access to any of these, you can move a provider from 🟡 to ✅:
   `provider/infrastructure/hetzner/TESTING.md`.
 - **vSphere** — a vCenter + ESXi host. Run `provider/infrastructure/vsphere/TESTING.md`
   (confirm CAPV adopts node zero rather than cloning a duplicate — the unverified path).
+- **DigitalOcean** — an API token. Run `provider/infrastructure/digitalocean/TESTING.md`.
 - **OpenStack** — provider work is planned; if you'd run the live test,
   tell us and we'll prioritize that provider.
 

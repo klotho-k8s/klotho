@@ -16,6 +16,7 @@ require (
 	github.com/aws/smithy-go v1.28.10
 	github.com/blang/semver/v4 v4.0.0
 	github.com/digitalocean/go-libvirt v0.0.0-20261013170128-efbbdf578ac8
+	github.com/digitalocean/godo v1.247.0
 	github.com/hetznercloud/hcloud-go/v2 v2.21.1
 	github.com/kdomanski/iso9660 v0.4.0
 	github.com/linode/linodego/v2 v2.6.0
@@ -115,7 +116,9 @@ require (
 	github.com/gosuri/uitable v0.0.4 // indirect
 	github.com/gregjones/httpcache v0.0.0-20190611155906-901d90724c79 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
+	github.com/hashicorp/go-cleanhttp v0.5.2 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
+	github.com/hashicorp/go-retryablehttp v0.7.7 // indirect
 	github.com/huandu/xstrings v1.5.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/jinzhu/copier v0.3.4 // indirect

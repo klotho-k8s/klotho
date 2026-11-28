@@ -28,6 +28,7 @@ import (
 	"github.com/klotho-k8s/klotho/provider/infrastructure"
 	awsprovider "github.com/klotho-k8s/klotho/provider/infrastructure/aws"
 	azureprovider "github.com/klotho-k8s/klotho/provider/infrastructure/azure"
+	doprovider "github.com/klotho-k8s/klotho/provider/infrastructure/digitalocean"
 	dockerprovider "github.com/klotho-k8s/klotho/provider/infrastructure/docker"
 	gcpprovider "github.com/klotho-k8s/klotho/provider/infrastructure/gcp"
 	hetznerprovider "github.com/klotho-k8s/klotho/provider/infrastructure/hetzner"
@@ -48,6 +49,7 @@ const (
 	providerLinode  = "linode"
 	providerGCP     = "gcp"
 	providerHetzner = "hetzner"
+	providerDO      = "digitalocean"
 	providerAzure   = "azure"
 	providerDocker  = "docker"
 	providerHyperv  = "hyperv"
@@ -446,6 +448,25 @@ func (a *app) infra(provider string) (infrastructure.Provider, error) {
 			return nil, err
 		}
 		return hetznerInfra{hetznerprovider.New(client, hc)}, nil
+	case providerDO:
+		d := a.cfg.DigitalOcean
+		dc := doprovider.Config{
+			Token:                d.Token,
+			Region:               d.Region,
+			Size:                 d.Size,
+			Image:                d.Image,
+			SSHKeys:              d.SSHKeys,
+			Tags:                 d.Tags,
+			VPCUUID:              d.VPCUUID,
+			LoadBalancerID:       d.LoadBalancerID,
+			ControlPlaneEndpoint: d.ControlPlaneEndpoint,
+			Port:                 d.Port,
+		}
+		client, err := doprovider.NewClient(dc)
+		if err != nil {
+			return nil, err
+		}
+		return doInfra{doprovider.New(client, dc)}, nil
 	case providerAzure:
 		az := a.cfg.Azure
 		ac := azureprovider.Config{
@@ -548,7 +569,7 @@ func (a *app) infra(provider string) (infrastructure.Provider, error) {
 			SSHAuthorizedKey: v.SSHAuthorizedKey,
 		})}, nil
 	default:
-		return nil, fmt.Errorf("infrastructure provider %q: %w (available: %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", provider, ErrNotImplemented, providerProxmox, providerDocker, providerAWS, providerLinode, providerGCP, providerHetzner, providerAzure, providerHyperv, providerLibvirt, providerVZ, providerVSphere)
+		return nil, fmt.Errorf("infrastructure provider %q: %w (available: %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", provider, ErrNotImplemented, providerProxmox, providerDocker, providerAWS, providerLinode, providerGCP, providerHetzner, providerDO, providerAzure, providerHyperv, providerLibvirt, providerVZ, providerVSphere)
 	}
 }
 
@@ -598,6 +619,14 @@ func (a *app) providerSecretData(provider string) map[string]string {
 	case providerHetzner:
 		if t := a.cfg.Hetzner.Token; t != "" {
 			return map[string]string{"HCLOUD_TOKEN": t}
+		}
+	case providerDO:
+		// CAPDO's infrastructure-components.yaml substitutes
+		// ${DO_B64ENCODED_CREDENTIALS} (base64 of the API token) into the Secret
+		// the controller reads as DIGITALOCEAN_ACCESS_TOKEN. Hand it over the same
+		// way CAPG hands over GCP_B64ENCODED_CREDENTIALS.
+		if t := a.cfg.DigitalOcean.Token; t != "" {
+			return map[string]string{"DO_B64ENCODED_CREDENTIALS": base64.StdEncoding.EncodeToString([]byte(t))}
 		}
 	case providerGCP:
 		if f := a.cfg.GCP.CredentialsFile; f != "" {
@@ -714,6 +743,11 @@ type hetznerInfra struct{ *hetznerprovider.Provider }
 
 func (hetznerInfra) Tag(cluster string) string { return hetznerprovider.Tag(cluster) }
 
+// doInfra adds the provider's tag convention to the DigitalOcean provider.
+type doInfra struct{ *doprovider.Provider }
+
+func (doInfra) Tag(cluster string) string { return doprovider.Tag(cluster) }
+
 // azureInfra adds the provider's tag convention to the Azure provider.
 type azureInfra struct{ *azureprovider.Provider }
 
@@ -779,6 +813,7 @@ var (
 	_ klotho.Tagger = linodeInfra{}
 	_ klotho.Tagger = gcpInfra{}
 	_ klotho.Tagger = hetznerInfra{}
+	_ klotho.Tagger = doInfra{}
 	_ klotho.Tagger = azureInfra{}
 	_ klotho.Tagger = hypervInfra{}
 	_ klotho.Tagger = libvirtInfra{}
@@ -790,6 +825,9 @@ var (
 	// vSphere's VSphereMachineTemplate likewise rejects a tags string list (its
 	// field is tagIDs); it tags via the VM annotation instead.
 	_ klotho.MachineTemplateTagger = vsphereInfra{}
+	// DigitalOcean's DOMachineTemplate uses spec.template.spec.additionalTags (a
+	// string list), not the default spec.template.spec.tags CAPDO rejects.
+	_ klotho.MachineTemplateTagger = doInfra{}
 	_ klotho.BootstrapNamer        = kubeadmProvider{}
 	_ klotho.BootstrapNamer        = k0sProvider{}
 	_ klotho.BootstrapNamer        = rke2Provider{}
@@ -803,6 +841,7 @@ var (
 	_ infrastructure.Provider      = linodeInfra{}
 	_ infrastructure.Provider      = gcpInfra{}
 	_ infrastructure.Provider      = hetznerInfra{}
+	_ infrastructure.Provider      = doInfra{}
 	_ infrastructure.Provider      = azureInfra{}
 	_ infrastructure.Provider      = hypervInfra{}
 	_ infrastructure.Provider      = libvirtInfra{}
