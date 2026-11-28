@@ -152,7 +152,7 @@ func Tag(cluster string) string { return cluster }
 // server-side applying it is rejected. Implementing this interface replaces
 // that default with a no-op: nothing is written to the DockerMachineTemplates,
 // and ownership stays on the containers' label.
-func (p *Provider) TagMachineTemplates(objs []*unstructured.Unstructured, tag string) error {
+func (p *Provider) TagMachineTemplates(_ []*unstructured.Unstructured, _ string) error {
 	return nil
 }
 

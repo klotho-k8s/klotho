@@ -191,9 +191,9 @@ log "done"
 func (p *Provider) postInitScript(ep cluster.Endpoint) []byte {
 	var b bytes.Buffer
 	err := postInitTemplate.Execute(&b, map[string]any{
-		"Kubeconfig":  shellQuote(AdminKubeconfig),
-		"K0sBin":      K0sBin,
-		"Server":      shellQuote(serverURL(ep)),
+		"Kubeconfig":     shellQuote(AdminKubeconfig),
+		"K0sBin":         K0sBin,
+		"Server":         shellQuote(serverURL(ep)),
 		"CertManager":    shellQuote(p.opts.CertManagerURL),
 		"Operator":       shellQuote(p.opts.OperatorURL),
 		"Manifests":      shellQuote(ManifestsDir + "/"),
