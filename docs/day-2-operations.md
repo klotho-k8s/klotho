@@ -19,6 +19,56 @@ can be undone by hand.
 
 ## Operations
 
+### 0. Pause and resume reconciliation (implemented)
+
+    klotho pause <cluster>
+    klotho unpause <cluster>
+
+Pause sets `spec.paused` on the cluster's `Cluster` object. Every Cluster API
+controller that owns the cluster — core, control plane, bootstrap and the
+infrastructure provider — checks the owning Cluster's `spec.paused` and stops
+reconciling, so there is no propagation step: setting the one field pauses
+everything that belongs to the cluster. klotho sets it with a server-side apply
+of only `spec.paused`, under its own `klotho-pause` field manager, so it owns
+that one field and never re-sends or clobbers the rest of the Cluster (nor a
+pause a `clusterctl move` set under its own manager). `unpause` clears the
+field the same way.
+
+**Pause stops reconciliation and nothing else.** The API server, etcd, the
+kubelets and every workload keep running exactly as before. There is **no cost
+saving, nothing is deprovisioned, and a failed node does not self-heal while the
+cluster is paused** — pausing removes the controllers and the machine-health
+check that would have remediated it. What stops is the reconcile loops: scaling,
+rollouts, remediation, and the creation and deletion of machines.
+
+**Pausing stalls deletion.** The paused check runs before a controller's delete
+logic, so `klotho delete` (and an ordered self-hosted delete) cannot make
+progress on a paused cluster. If a delete is stuck, `klotho unpause <cluster>`
+first. For that reason `pause` refuses a cluster — or a cluster with any machine
+— that is already being deleted, and prints the finding; `--force` pauses anyway.
+
+**`clusterctl move` refuses to start on an already-paused cluster.** If you plan
+to move a cluster between management clusters, unpause it first. When `pause`
+finds the cluster already paused it reports the field manager that set it and
+leaves it untouched, so klotho does not take a `clusterctl move` pause away from
+clusterctl.
+
+`pause` also reports, without blocking, a control plane or pool rollout in
+progress (it will freeze half-done) and any control plane machine that is not
+Ready (nothing will remediate it while paused). `unpause` reports any lingering
+per-object `cluster.x-k8s.io/paused` annotations on child objects: that
+surgical, single-object pause is separate from `spec.paused`, and clearing
+`spec.paused` does not remove it, so an annotated object stays paused until the
+annotation is removed by hand. klotho never sets that annotation and never
+removes it; it only tells you it is there.
+
+Good uses: a maintenance window where you do not want controllers acting;
+manual node surgery without the machine-health check fighting you; quiescing a
+cluster before a backup or a `clusterctl move`; and debugging a controller that
+is stuck in a reconcile loop. All of this is a single field a person could set
+with `kubectl` through `klotho shell`; the verb exists for the guards and the
+honest reporting around it.
+
 ### 1. Upgrade Cluster API itself (core, kubeadm bootstrap, kubeadm control plane)
 
 The Cluster API operator owns these. Each provider is a `CoreProvider`,
