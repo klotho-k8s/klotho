@@ -213,6 +213,13 @@ the code:
 
 - `provider/backend/proxmox/README.md`: why cluster state is kept in the
   comment of an empty Proxmox resource pool, what was rejected, and the limits.
+- `provider/backend/s3/README.md`: the S3 state backend (`backend: s3`), how
+  it reserves a cluster name atomically with a conditional write, and its
+  environment-only credentials.
+- `provider/backend/azureblob/README.md`: the Azure Blob state backend
+  (`backend: azureblob`), its `If-None-Match: *` atomic reservation, and the
+  DefaultAzureCredential / connection-string / account-key auth it accepts from
+  the environment only.
 - `provider/payload/host.go`: why a payload host exists, how large klotho's
   user-data actually is, which providers' user-data caps it exceeds, and how
   to measure your own. The S3 host is implemented and tested; the create

@@ -349,6 +349,58 @@ s3:
 	}
 }
 
+func TestAzureBlobBackend(t *testing.T) {
+	isolate(t)
+
+	writeConfig(t, `
+backend: azureblob
+azureblob:
+  accountName: klothostate
+  container: klotho-state
+  prefix: clusters
+`)
+	t.Setenv(EnvAzureStorageKey, "YWNjb3VudC1rZXk=")
+	c, err := Load("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.EffectiveBackend() != BackendAzureBlob {
+		t.Errorf("backend = %s", c.EffectiveBackend())
+	}
+	a := c.AzureBlob
+	if a.AccountName != "klothostate" || a.Container != "klotho-state" || a.Prefix != "clusters" {
+		t.Errorf("azureblob = %+v", a)
+	}
+	if a.AccountKey != "YWNjb3VudC1rZXk=" {
+		t.Errorf("account key not taken from the environment: %+v", a)
+	}
+
+	// The account key never comes from the file.
+	writeConfig(t, "backend: azureblob\nazureblob:\n  accountName: a\n  container: c\n  accountKey: secret\n")
+	if _, err := Load("", ""); err == nil {
+		t.Error("account key in the file accepted")
+	}
+
+	for name, body := range map[string]string{
+		"missing container":  "backend: azureblob\nazureblob:\n  accountName: a\n",
+		"bad endpoint":       "backend: azureblob\nazureblob:\n  container: c\n  endpoint: blob:10000\n",
+		"no account or conn": "backend: azureblob\nazureblob:\n  container: c\n",
+	} {
+		writeConfig(t, body)
+		if _, err := Load("", ""); err == nil || !strings.Contains(err.Error(), "azureblob") {
+			t.Errorf("%s: err = %v", name, err)
+		}
+	}
+
+	// A connection string from the environment stands in for the account.
+	writeConfig(t, "backend: azureblob\nazureblob:\n  container: c\n")
+	t.Setenv(EnvAzureStorageKey, "")
+	t.Setenv(EnvAzureStorageConnString, "DefaultEndpointsProtocol=https;AccountName=a;AccountKey=k;EndpointSuffix=core.windows.net")
+	if _, err := Load("", ""); err != nil {
+		t.Errorf("connection string from env rejected: %v", err)
+	}
+}
+
 func TestPayloadS3(t *testing.T) {
 	isolate(t)
 
