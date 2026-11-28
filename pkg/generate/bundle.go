@@ -116,7 +116,8 @@ func FindOne(b *Bundle, group, kindSuffix string) (*unstructured.Unstructured, e
 }
 
 // SetControlPlaneEndpoint sets spec.controlPlaneEndpoint on the single
-// infrastructure cluster object and re-renders b.YAML.
+// infrastructure cluster object, adds the endpoint host to the apiserver
+// certSANs of any KubeadmControlPlane, and re-renders b.YAML.
 func SetControlPlaneEndpoint(b *Bundle, ep cluster.Endpoint) error {
 	obj, err := FindOne(b, InfrastructureGroup, "Cluster")
 	if err != nil {
@@ -128,8 +129,47 @@ func SetControlPlaneEndpoint(b *Bundle, ep cluster.Endpoint) error {
 	if err := unstructured.SetNestedField(obj.Object, int64(ep.Port), "spec", "controlPlaneEndpoint", "port"); err != nil {
 		return errors.Wrapf(err, "setting endpoint port on %s %q", obj.GetKind(), obj.GetName())
 	}
+	if err := addEndpointCertSAN(b, ep.Host); err != nil {
+		return err
+	}
 	_, err = b.Render()
 	return err
+}
+
+// addEndpointCertSAN appends host to spec.kubeadmConfigSpec.clusterConfiguration
+// .apiServer.certSANs of every KubeadmControlPlane in the bundle that does not
+// already list it, creating the list when missing.
+//
+// The control plane endpoint is resolved at Prepare time and is frequently a
+// different address from any control plane node's own IP: a load balancer (CAPD
+// runs a separate haproxy container) or a kube-vip VIP (Proxmox). kubeadm adds
+// the node's own address to the API server serving certificate automatically,
+// but not the endpoint. Without the endpoint in the certificate SANs, every
+// in-cluster client that dials the API server through the endpoint - including
+// the self-hosted Cluster API controllers - fails TLS verification
+// ("certificate is valid for <node ip>, not <endpoint ip>"), so the adopted
+// Machine never binds its node and the control plane never initializes. The
+// host must be injected post-resolution because the endpoint address is not
+// known at template-render time. Non-kubeadm control planes (k0s, RKE2) have no
+// KubeadmControlPlane in the bundle and are left untouched.
+func addEndpointCertSAN(b *Bundle, host string) error {
+	if host == "" {
+		return nil
+	}
+	path := []string{"spec", "kubeadmConfigSpec", "clusterConfiguration", "apiServer", "certSANs"}
+	for _, kcp := range Find(b, ControlPlaneGroup, "KubeadmControlPlane") {
+		sans, _, err := unstructured.NestedStringSlice(kcp.Object, path...)
+		if err != nil {
+			return errors.Wrapf(err, "reading certSANs of %s %q", kcp.GetKind(), kcp.GetName())
+		}
+		if slices.Contains(sans, host) {
+			continue
+		}
+		if err := unstructured.SetNestedStringSlice(kcp.Object, append(sans, host), path...); err != nil {
+			return errors.Wrapf(err, "setting certSANs of %s %q", kcp.GetKind(), kcp.GetName())
+		}
+	}
+	return nil
 }
 
 // AddMachineTemplateTag appends tag to spec.template.spec.tags of every

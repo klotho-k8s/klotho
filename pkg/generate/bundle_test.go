@@ -132,6 +132,84 @@ func TestSetControlPlaneEndpointErrors(t *testing.T) {
 	}
 }
 
+// kcpManifest mirrors the shape klotho's Docker template renders: a flat
+// Cluster + DockerCluster + KubeadmControlPlane whose apiServer carries a
+// static certSAN list that omits the (dynamically resolved) control plane
+// endpoint.
+const kcpManifest = `apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: demo
+  namespace: default
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: DockerCluster
+metadata:
+  name: demo
+spec: {}
+---
+apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+kind: KubeadmControlPlane
+metadata:
+  name: demo-control-plane
+spec:
+  kubeadmConfigSpec:
+    clusterConfiguration:
+      apiServer:
+        certSANs:
+        - localhost
+        - 127.0.0.1
+`
+
+func certSANs(t *testing.T, b *Bundle) []string {
+	t.Helper()
+	kcp, err := FindOne(b, ControlPlaneGroup, "KubeadmControlPlane")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sans, _, err := unstructured.NestedStringSlice(kcp.Object,
+		"spec", "kubeadmConfigSpec", "clusterConfiguration", "apiServer", "certSANs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sans
+}
+
+func TestSetControlPlaneEndpointInjectsCertSAN(t *testing.T) {
+	b := mustParse(t, kcpManifest)
+	// The resolved endpoint host (e.g. CAPD's haproxy lb) differs from the node
+	// IP kubeadm adds on its own, so it must land in the apiserver certSANs.
+	if err := SetControlPlaneEndpoint(b, cluster.Endpoint{Host: "10.89.1.7", Port: 6443}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"localhost", "127.0.0.1", "10.89.1.7"}
+	if got := certSANs(t, b); !reflect.DeepEqual(got, want) {
+		t.Fatalf("certSANs = %v, want %v", got, want)
+	}
+	if !strings.Contains(string(b.YAML), "10.89.1.7") {
+		t.Fatal("endpoint host not re-rendered into YAML")
+	}
+	assertInSync(t, b)
+
+	// Idempotent: resolving/patching again (e.g. the bootstrap retarget path)
+	// must not duplicate the SAN.
+	if err := SetControlPlaneEndpoint(b, cluster.Endpoint{Host: "10.89.1.7", Port: 6443}); err != nil {
+		t.Fatal(err)
+	}
+	if got := certSANs(t, b); !reflect.DeepEqual(got, want) {
+		t.Fatalf("after re-apply certSANs = %v, want %v", got, want)
+	}
+}
+
+func TestSetControlPlaneEndpointNoKubeadmControlPlane(t *testing.T) {
+	// A non-kubeadm bundle (no KubeadmControlPlane) is left untouched: the
+	// endpoint still lands on the infrastructure cluster, with no error.
+	b := mustParse(t, manifest)
+	if err := SetControlPlaneEndpoint(b, cluster.Endpoint{Host: "10.1.1.1", Port: 6443}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAddMachineTemplateTag(t *testing.T) {
 	b := mustParse(t, manifest)
 	for range 2 {
